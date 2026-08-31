@@ -95,6 +95,18 @@ jobs:
       - name: Build portable app
         run: python -m PyInstaller build/cost_extractor.spec --noconfirm --clean
 
+      - name: OCR selftest against the packaged exe
+        shell: pwsh
+        run: |
+          python scripts/make_selftest_fixture.py "$env:RUNNER_TEMP\selftest.pdf"
+          & ".\dist\CostExtractor\CostExtractor.exe" --selftest "$env:RUNNER_TEMP\selftest.pdf"
+          $output = Get-Content "$env:RUNNER_TEMP\selftest_output.txt" -Raw
+          Write-Output $output
+          if ($output -notmatch "grand_total=2345\.00") {
+            Write-Error "OCR selftest did not produce the expected grand_total=2345.00 -- OCR is broken in the packaged build"
+            exit 1
+          }
+
       - name: Zip portable build
         id: zip
         shell: pwsh
@@ -165,6 +177,18 @@ jobs:
 
       - name: Build portable app
         run: python -m PyInstaller build/cost_extractor_macos.spec --noconfirm --clean
+
+      - name: OCR selftest against the packaged app
+        run: |
+          set -euo pipefail
+          python scripts/make_selftest_fixture.py "$RUNNER_TEMP/selftest.pdf"
+          "dist/CostExtractor.app/Contents/MacOS/CostExtractor" --selftest "$RUNNER_TEMP/selftest.pdf"
+          output=$(cat "$RUNNER_TEMP/selftest_output.txt")
+          echo "$output"
+          if ! echo "$output" | grep -q "grand_total=2345.00"; then
+            echo "::error::OCR selftest did not produce the expected grand_total=2345.00 -- OCR is broken in the packaged build"
+            exit 1
+          fi
 
       - name: Zip portable build
         id: zip
