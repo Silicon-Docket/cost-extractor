@@ -41,6 +41,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Exclude workspace from Windows Defender
+        shell: pwsh
+        run: |
+          # PyInstaller bootloaders are a well-known Defender false-positive
+          # pattern; without this, Defender can silently quarantine/delete
+          # the freshly-built exe before the OCR selftest step even runs.
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction SilentlyContinue
+          Add-MpPreference -ExclusionProcess "CostExtractor.exe" -ErrorAction SilentlyContinue
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -103,6 +112,10 @@ jobs:
         run: |
           if (-not (Test-Path "$env:RUNNER_TEMP\selftest.pdf")) {
             Write-Error "Fixture generation did not produce $env:RUNNER_TEMP\selftest.pdf"
+            exit 1
+          }
+          if (-not (Test-Path ".\dist\CostExtractor\CostExtractor.exe")) {
+            Write-Error "CostExtractor.exe is missing right before invocation -- likely quarantined/deleted by antivirus"
             exit 1
           }
 
