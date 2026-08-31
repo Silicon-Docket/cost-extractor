@@ -10,6 +10,52 @@ negatives) can each be toggled on/off, and you can add your own custom regex
 pattern as an additional rule. Scanned/image-only PDF pages fall back to
 OCR automatically.
 
+## Using the app
+
+Add files or a folder (or drag-and-drop them onto the file list), tick the
+money formats you want to search for, click **Run**, then **Save Report...**
+to export the `.xlsx`. The preview table shows every match before you export.
+
+### Adding a custom money-format pattern
+
+The three built-in formats won't cover every document. In the **Money
+Formats** panel, use the **"Add custom pattern…"** row to add your own:
+
+1. Enter a regular expression in the pattern field. It **must** contain a
+   named capture group called `amount`, e.g. `(?P<amount>\d+(?:\.\d{2})?)`.
+   Patterns without this group are rejected with an inline error rather
+   than being added.
+2. Optionally enter a label to show next to its checkbox (defaults to
+   "Custom pattern N" if left blank).
+3. Click **Add**. On success, the pattern appears as its own checkbox
+   (enabled by default) with a small **×** button to remove it. On
+   failure — invalid regex syntax, a missing `amount` group, or a pattern
+   flagged as too slow to run safely — an error message appears inline
+   under the field instead of crashing the app; nothing is added.
+
+Two more capture groups are recognized if you include them:
+
+- `(?P<mult>...)` — matches a magnitude word/letter (`K`, `M`, `B`,
+  `thousand`, `million`, `billion`, case-insensitive) and multiplies the
+  amount accordingly, the same way the built-in shorthand rule does.
+- `(?P<sign>...)` — if this group matches anything (or if the overall
+  matched text simply contains a literal `(`), the amount is counted as
+  negative — the same convention the built-in accounting-negatives rule
+  uses for `($1,200.00)`.
+
+**Example** — to also catch amounts written as `45.00 EUR` or `1.5M EUR`:
+
+```
+Pattern: (?P<amount>\d+(?:\.\d+)?)\s?(?P<mult>K|M|B)?\s?EUR
+Label:   Euro
+```
+
+Custom patterns contribute their matched value as-is to the totals — there's
+no currency conversion, so a pattern like the one above sums EUR figures
+into the same USD-labeled report. That's intentional: custom rules are an
+escape hatch for whatever your documents actually contain, not a currency
+converter.
+
 ## Dev setup
 
 ```
