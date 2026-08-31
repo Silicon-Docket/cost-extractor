@@ -119,12 +119,25 @@ jobs:
             exit 1
           }
 
-          & ".\dist\CostExtractor\CostExtractor.exe" --selftest "$env:RUNNER_TEMP\selftest.pdf"
-          $exitCode = $LASTEXITCODE
-          Write-Output "CostExtractor.exe --selftest exit code: $exitCode"
+          # console=False means the app has no attached stdout/stderr, so an
+          # unhandled Python exception normally has nowhere to go and is
+          # silently swallowed. Start-Process -RedirectStandard* attaches
+          # real OS-level file handles at process-creation time (not just
+          # Python's sys.stdout), which actually captures a crash traceback.
+          $stdout = "$env:RUNNER_TEMP\selftest_stdout.txt"
+          $stderr = "$env:RUNNER_TEMP\selftest_stderr.txt"
+          $proc = Start-Process -FilePath ".\dist\CostExtractor\CostExtractor.exe" `
+            -ArgumentList "--selftest", "`"$env:RUNNER_TEMP\selftest.pdf`"" `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr `
+            -PassThru -Wait -NoNewWindow
+          Write-Output "CostExtractor.exe --selftest exit code: $($proc.ExitCode)"
+          Write-Output "--- stdout ---"
+          Get-Content $stdout -ErrorAction SilentlyContinue
+          Write-Output "--- stderr ---"
+          Get-Content $stderr -ErrorAction SilentlyContinue
 
           if (-not (Test-Path "$env:RUNNER_TEMP\selftest_output.txt")) {
-            Write-Error "selftest_output.txt was never created -- the packaged exe likely crashed or exited silently (exit code was $exitCode)"
+            Write-Error "selftest_output.txt was never created -- the packaged exe likely crashed or exited silently (exit code was $($proc.ExitCode))"
             exit 1
           }
 
