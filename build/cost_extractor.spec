@@ -12,10 +12,22 @@ datas = [(os.path.join(PROJECT_ROOT, "vendor", "tesseract"), "tesseract")]
 datas += collect_data_files("tkinterdnd2")
 datas += collect_data_files("pypdfium2")
 
+# python311.dll depends on VCRUNTIME140_1.dll and (transitively, via other
+# bundled extensions) MSVCP140.dll, but PyInstaller's dependency walker
+# doesn't always pick these up automatically. Bundle them explicitly from
+# the build machine's System32 if present there, so a target machine
+# without the VC++ 2015-2022 Redistributable installed still has them.
+binaries = []
+system32 = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+for _dll_name in ("VCRUNTIME140_1.dll", "MSVCP140.dll"):
+    _dll_path = os.path.join(system32, _dll_name)
+    if os.path.exists(_dll_path):
+        binaries.append((_dll_path, "."))
+
 a = Analysis(
     [os.path.join(PROJECT_ROOT, "cost_extractor", "main.py")],
     pathex=[PROJECT_ROOT],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=[],
     hookspath=[],
