@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+vendor/
+dist/
+build/cost_extractor/
+build/*.spec~
+*.egg-info/
+.pytest_cache/
