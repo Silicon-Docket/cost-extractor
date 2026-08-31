@@ -20,12 +20,13 @@ env:
   TESSERACT_SHA256: "c885fff6998e0608ba4bb8ab51436e1c6775c2bafc2559a19b423e18678b60c9"
 
 jobs:
-  build-and-release:
-    runs-on: windows-latest
+  determine-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Determine version
         id: version
-        shell: bash
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
@@ -33,6 +34,10 @@ jobs:
             echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
           fi
 
+  build-windows:
+    needs: determine-version
+    runs-on: windows-latest
+    steps:
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -94,16 +99,105 @@ jobs:
         id: zip
         shell: pwsh
         run: |
-          $version = "${{ steps.version.outputs.version }}"
+          $version = "${{ needs.determine-version.outputs.version }}"
           $zipName = "CostExtractor-$version-win64.zip"
           Compress-Archive -Path "dist\CostExtractor" -DestinationPath $zipName
           echo "zip_name=$zipName" >> $env:GITHUB_OUTPUT
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: ${{ steps.zip.outputs.zip_name }}
+          if-no-files-found: error
+
+  build-macos:
+    needs: determine-version
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Fetch and vendor Tesseract-OCR (with bundled dylibs)
+        run: |
+          set -euo pipefail
+          brew install tesseract dylibbundler
+
+          TESS_PREFIX="$(brew --prefix tesseract)"
+          VENDOR_DIR="vendor/tesseract-macos"
+          mkdir -p "$VENDOR_DIR/tessdata"
+
+          cp "$TESS_PREFIX/bin/tesseract" "$VENDOR_DIR/tesseract"
+          cp "$TESS_PREFIX/share/tessdata/eng.traineddata" "$VENDOR_DIR/tessdata/"
+
+          chmod +w "$VENDOR_DIR/tesseract"
+          dylibbundler -od -b \
+            -x "$VENDOR_DIR/tesseract" \
+            -d "$VENDOR_DIR/lib" \
+            -p "@executable_path/lib/"
+
+          if [ ! -x "$VENDOR_DIR/tesseract" ]; then
+            echo "::error::$VENDOR_DIR/tesseract missing or not executable after bundling"
+            exit 1
+          fi
+
+      - name: Verify vendored tesseract runs standalone
+        run: |
+          set -euo pipefail
+          # Run from a different directory so any lingering absolute
+          # Homebrew paths in the binary's load commands would surface as
+          # a failure here, not be masked by cwd/Homebrew still matching.
+          cd /tmp
+          "$GITHUB_WORKSPACE/vendor/tesseract-macos/tesseract" --version
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Build portable app
+        run: python -m PyInstaller build/cost_extractor_macos.spec --noconfirm --clean
+
+      - name: Zip portable build
+        id: zip
+        run: |
+          set -euo pipefail
+          version="${{ needs.determine-version.outputs.version }}"
+          zip_name="CostExtractor-$version-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent "dist/CostExtractor.app" "$zip_name"
+          echo "zip_name=$zip_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: ${{ steps.zip.outputs.zip_name }}
+          if-no-files-found: error
+
+  publish-release:
+    needs: [determine-version, build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
       - name: Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.version.outputs.version }}" `
-            "${{ steps.zip.outputs.zip_name }}" `
-            --title "${{ steps.version.outputs.version }}" `
+          gh release create "${{ needs.determine-version.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            artifacts/windows-build/*.zip \
+            artifacts/macos-build/*.zip \
+            --title "${{ needs.determine-version.outputs.version }}" \
             --generate-notes

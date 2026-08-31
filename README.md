@@ -1,8 +1,8 @@
 # Cost Extractor
 
-A portable Windows desktop app that scans `.docx`, `.pdf`, and `.zip` files
-(including nested zips) for USD dollar amounts and produces an Excel report
-with per-document subtotals and a grand total.
+A portable desktop app (Windows and macOS) that scans `.docx`, `.pdf`, and
+`.zip` files (including nested zips) for USD dollar amounts and produces an
+Excel report with per-document subtotals and a grand total.
 
 Money formats are configurable in the app: three built-in rules (standard
 `$1,234.56` amounts, `$1.5M`/`$250K` shorthand, and `($1,200.00)` accounting
@@ -60,14 +60,20 @@ converter.
 
 ```
 python -m venv .venv
+# Windows
 .venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
+# macOS
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 ```
 
 ### Vendoring Tesseract OCR (one-time, not checked into git)
 
-The OCR fallback needs a portable Tesseract-OCR install at
-`vendor/tesseract/` (gitignored — a real install is ~150-240MB before/after
-pruning, unsuitable for source control). To set it up:
+The OCR fallback needs a portable Tesseract-OCR install vendored locally
+(gitignored — a real install is ~150-240MB, unsuitable for source control).
+The setup differs by platform since there's no single portable Tesseract
+distribution that works both ways.
+
+**Windows** (`vendor/tesseract/`):
 
 1. Install the exact build the app expects:
    `winget install --id UB-Mannheim.TesseractOCR` (or download
@@ -85,33 +91,73 @@ pruning, unsuitable for source control). To set it up:
    are what's actually used. Do this only after confirming a build works
    with the full install; verify again afterward.
 
+**macOS** (`vendor/tesseract-macos/`) — Homebrew's `tesseract` is dynamically
+linked against its own dylibs, so it needs `dylibbundler` to become
+redistributable outside your machine:
+
+```bash
+brew install tesseract dylibbundler
+TESS_PREFIX="$(brew --prefix tesseract)"
+mkdir -p vendor/tesseract-macos/tessdata
+cp "$TESS_PREFIX/bin/tesseract" vendor/tesseract-macos/tesseract
+cp "$TESS_PREFIX/share/tessdata/eng.traineddata" vendor/tesseract-macos/tessdata/
+chmod +w vendor/tesseract-macos/tesseract
+dylibbundler -od -b \
+  -x vendor/tesseract-macos/tesseract \
+  -d vendor/tesseract-macos/lib \
+  -p "@executable_path/lib/"
+```
+
+`dylibbundler` copies every dylib the binary depends on into `lib/` and
+rewrites the binary's load commands to reference them relatively, so the
+result runs without Homebrew installed. Verify with
+`cd /tmp && /path/to/vendor/tesseract-macos/tesseract --version` (running
+from an unrelated directory rules out anything still resolving via cwd).
+
 Tests that need OCR (`tests/test_pdf_extractor.py`'s scanned-PDF test) skip
-automatically if `vendor/tesseract/tesseract.exe` isn't present.
+automatically if the platform-appropriate vendored `tesseract` binary isn't
+present.
 
 ## Running the tests
 
 ```
-.venv\Scripts\python -m pytest
+.venv\Scripts\python -m pytest   # Windows
+.venv/bin/python -m pytest       # macOS
 ```
 
 ## Running from source
 
 ```
-.venv\Scripts\python -m cost_extractor.main
+.venv\Scripts\python -m cost_extractor.main   # Windows
+.venv/bin/python -m cost_extractor.main       # macOS
 ```
 
 ## Building the portable app
 
-```
+```bash
+# Windows
 .venv\Scripts\pip install pyinstaller
 .venv\Scripts\python -m PyInstaller build\cost_extractor.spec --noconfirm --clean
+
+# macOS
+.venv/bin/pip install pyinstaller
+.venv/bin/python -m PyInstaller build/cost_extractor_macos.spec --noconfirm --clean
 ```
 
-Output: `dist\CostExtractor\CostExtractor.exe`. The whole `dist\CostExtractor`
-folder is portable — copy it anywhere (including a USB drive) and run the
-exe directly; no installer is needed. Onedir (not onefile) is used
-deliberately: bundling Tesseract in a onefile build would force a slow
-extract-to-temp on every launch.
+Windows output: `dist\CostExtractor\CostExtractor.exe` — the whole
+`dist\CostExtractor` folder is portable, copy it anywhere (including a USB
+drive) and run the exe directly; no installer needed. Onedir (not onefile)
+is used deliberately: bundling Tesseract in a onefile build would force a
+slow extract-to-temp on every launch.
+
+macOS output: `dist/CostExtractor.app` — copy it anywhere (e.g. `/Applications`)
+and double-click to run. Since it isn't code-signed or notarized (no Apple
+Developer account involved in building this), Gatekeeper will refuse to
+open it the first time with "cannot be opened because the developer cannot
+be verified." Right-click (or Control-click) the app → **Open** → **Open**
+in the confirmation dialog — this is a one-time step per machine. If that
+still doesn't work, clear the quarantine flag directly:
+`xattr -cr /path/to/CostExtractor.app`.
 
 ## Downloading a release
 
@@ -123,10 +169,11 @@ git tag v1.0.0
 git push origin v1.0.0
 ```
 
-That builds the app on a clean Windows runner (fetching and vendoring
-Tesseract itself, so nothing from your machine leaks into the build),
-runs the full test suite, zips the portable folder, and publishes it as
-a GitHub Release asset named `CostExtractor-v1.0.0-win64.zip`. Download
-that zip, extract it anywhere, and run `CostExtractor.exe` from inside
-the extracted folder. You can also trigger a build manually from the
-Actions tab ("Run workflow") without pushing a tag.
+That builds the app on clean Windows and macOS runners in parallel (each
+fetching and vendoring Tesseract itself, so nothing from your machine leaks
+into either build), runs the full test suite on both, and publishes one
+GitHub Release with two assets: `CostExtractor-v1.0.0-win64.zip` and
+`CostExtractor-v1.0.0-macos.zip`. Download the one for your platform,
+extract it anywhere, and run the app from inside the extracted folder (see
+the Gatekeeper note above for macOS). You can also trigger a build manually
+from the Actions tab ("Run workflow") without pushing a tag.
