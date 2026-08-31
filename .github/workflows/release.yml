@@ -95,11 +95,26 @@ jobs:
       - name: Build portable app
         run: python -m PyInstaller build/cost_extractor.spec --noconfirm --clean
 
+      - name: Generate OCR selftest fixture
+        run: python scripts/make_selftest_fixture.py "$env:RUNNER_TEMP\selftest.pdf"
+
       - name: OCR selftest against the packaged exe
         shell: pwsh
         run: |
-          python scripts/make_selftest_fixture.py "$env:RUNNER_TEMP\selftest.pdf"
+          if (-not (Test-Path "$env:RUNNER_TEMP\selftest.pdf")) {
+            Write-Error "Fixture generation did not produce $env:RUNNER_TEMP\selftest.pdf"
+            exit 1
+          }
+
           & ".\dist\CostExtractor\CostExtractor.exe" --selftest "$env:RUNNER_TEMP\selftest.pdf"
+          $exitCode = $LASTEXITCODE
+          Write-Output "CostExtractor.exe --selftest exit code: $exitCode"
+
+          if (-not (Test-Path "$env:RUNNER_TEMP\selftest_output.txt")) {
+            Write-Error "selftest_output.txt was never created -- the packaged exe likely crashed or exited silently (exit code was $exitCode)"
+            exit 1
+          }
+
           $output = Get-Content "$env:RUNNER_TEMP\selftest_output.txt" -Raw
           Write-Output $output
           if ($output -notmatch "grand_total=2345\.00") {
