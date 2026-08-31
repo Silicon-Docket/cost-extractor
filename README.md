@@ -66,3 +66,21 @@ folder is portable — copy it anywhere (including a USB drive) and run the
 exe directly; no installer is needed. Onedir (not onefile) is used
 deliberately: bundling Tesseract in a onefile build would force a slow
 extract-to-temp on every launch.
+
+## Downloading a release
+
+Prebuilt releases are published automatically via GitHub Actions
+(`.github/workflows/release.yml`). To cut one:
+
+```
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+That builds the app on a clean Windows runner (fetching and vendoring
+Tesseract itself, so nothing from your machine leaks into the build),
+runs the full test suite, zips the portable folder, and publishes it as
+a GitHub Release asset named `CostExtractor-v1.0.0-win64.zip`. Download
+that zip, extract it anywhere, and run `CostExtractor.exe` from inside
+the extracted folder. You can also trigger a build manually from the
+Actions tab ("Run workflow") without pushing a tag.
