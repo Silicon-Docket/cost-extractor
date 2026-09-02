@@ -19,7 +19,10 @@ to export the `.xlsx`. The preview table shows every match before you export.
 ### Adding a custom money-format pattern
 
 The three built-in formats won't cover every document. In the **Money
-Formats** panel, use the **"Add custom pattern…"** row to add your own:
+Formats** panel, use the **Custom pattern** row to add your own. The **?**
+button next to **Add** opens this same guide inside the app, with a
+**Use example** button that fills in the example below so you can try it
+with one click:
 
 1. Enter a regular expression in the pattern field. It **must** contain a
    named capture group called `amount`, e.g. `(?P<amount>\d+(?:\.\d{2})?)`.

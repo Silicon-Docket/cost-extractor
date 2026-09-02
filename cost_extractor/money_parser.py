@@ -225,6 +225,52 @@ def _is_pattern_too_slow(compiled: re.Pattern) -> bool:
     return False
 
 
+CUSTOM_PATTERN_EXAMPLE_PATTERN = r"(?P<amount>\d+(?:\.\d+)?)\s?(?P<mult>K|M|B)?\s?EUR"
+CUSTOM_PATTERN_EXAMPLE_LABEL = "Euro"
+
+# User-facing documentation for custom rules, shown by the GUI's "?" button.
+# Kept next to build_custom_rule/generic_normalizer so the contract and its
+# description live in one place; tests check the example really validates.
+CUSTOM_PATTERN_HELP = (
+    r"""CUSTOM MONEY-FORMAT PATTERNS
+
+A custom pattern is a regular expression (Python syntax). It is matched
+case-insensitively against the text of every document, and each match is
+added to the totals alongside the built-in formats.
+
+REQUIRED GROUP
+  (?P<amount>...)   The number to count: digits, optionally with thousands
+                    separators and decimals, e.g. (?P<amount>\d+(?:\.\d{2})?)
+
+OPTIONAL GROUPS
+  (?P<mult>...)     A magnitude letter or word: K, M, B, thousand, million,
+                    billion. The amount is multiplied to match
+                    (1.5M -> 1500000).
+  (?P<sign>...)     If this group matches anything, the amount is counted as
+                    negative. A literal "(" anywhere in the matched text also
+                    makes it negative, the same way the built-in accounting
+                    rule treats ($1,200.00).
+
+EXAMPLE  -  catch "45.00 EUR" and "1.5M EUR"
+  Pattern:  %s
+  Label:    %s
+
+Click "Use example" to paste this into the fields, then click Add.
+
+NOTES
+  - Patterns with invalid syntax, without an "amount" group, or too slow to
+    run safely are rejected; an error appears under the format list and
+    nothing is added.
+  - Matched values go into the totals as-is. There is no currency
+    conversion: the example above sums EUR figures into the same report as
+    the USD ones.
+  - Leave Label blank to name the rule "Custom pattern N".
+  - Custom rules can be removed with the small x button next to them.
+"""
+    % (CUSTOM_PATTERN_EXAMPLE_PATTERN, CUSTOM_PATTERN_EXAMPLE_LABEL)
+)
+
+
 def build_custom_rule(
     pattern_str: str, label: Optional[str], index: int
 ) -> MoneyFormatRule:

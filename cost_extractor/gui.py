@@ -17,7 +17,14 @@ try:
 except Exception:  # noqa: BLE001 - native Tcl package can fail to load
     _HAS_DND = False
 
-from cost_extractor.money_parser import MoneyFormatRule, build_custom_rule, default_rules
+from cost_extractor.money_parser import (
+    CUSTOM_PATTERN_EXAMPLE_LABEL,
+    CUSTOM_PATTERN_EXAMPLE_PATTERN,
+    CUSTOM_PATTERN_HELP,
+    MoneyFormatRule,
+    build_custom_rule,
+    default_rules,
+)
 from cost_extractor.pipeline import DocumentResult, PipelineResult, run_pipeline
 from cost_extractor.report import build_workbook, save_workbook
 
@@ -44,6 +51,7 @@ class App:
         self._progress_queue: "queue.Queue[str]" = queue.Queue()
         self._custom_rule_count = 0
         self._worker_thread: Optional[threading.Thread] = None
+        self._help_window: Optional[tk.Toplevel] = None
 
         self._build_widgets()
         self._refresh_rule_checkboxes()
@@ -206,14 +214,34 @@ class App:
         self._rule_error_label.pack(fill="x")
 
         custom_frame = ttk.Frame(rules_frame)
-        custom_frame.pack(fill="x", pady=4)
+        custom_frame.pack(fill="x", pady=(4, 0))
         ttk.Label(custom_frame, text="Custom pattern:").pack(side="left")
         self._custom_pattern_entry = ttk.Entry(custom_frame)
         self._custom_pattern_entry.pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Label(custom_frame, text="Label:").pack(side="left")
         self._custom_label_entry = ttk.Entry(custom_frame, width=15)
         self._custom_label_entry.pack(side="left", padx=4)
         ttk.Button(custom_frame, text="Add", command=self._on_add_custom_pattern).pack(
             side="left"
+        )
+        ttk.Button(
+            custom_frame, text="?", width=2, command=self.show_custom_pattern_help
+        ).pack(side="left", padx=(4, 0))
+
+        # Always-visible one-liner; the full guide is behind the "?" button.
+        self._custom_hint_label = ttk.Label(
+            rules_frame,
+            foreground="gray",
+            text=(
+                "Regex with a required (?P<amount>...) group. Optional: "
+                "(?P<mult>...) for K/M/B, (?P<sign>...) for negatives. "
+                "Click ? for details and an example."
+            ),
+        )
+        self._custom_hint_label.pack(fill="x", pady=(0, 4))
+        rules_frame.bind(
+            "<Configure>",
+            lambda e: self._custom_hint_label.config(wraplength=max(e.width - 16, 100)),
         )
 
         run_frame = ttk.Frame(self.root)
@@ -243,6 +271,50 @@ class App:
         ):
             self._preview_tree.heading(col, text=label)
         self._preview_tree.pack(fill="both", expand=True)
+
+    def show_custom_pattern_help(self) -> tk.Toplevel:
+        """Opens (or raises, if already open) the custom-pattern guide."""
+        existing = self._help_window
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_set()
+            return existing
+
+        window = tk.Toplevel(self.root)
+        window.title("Custom money-format patterns")
+        window.transient(self.root)
+
+        body = ttk.Frame(window)
+        body.pack(fill="both", expand=True)
+        line_count = CUSTOM_PATTERN_HELP.count("\n")  # text ends with a newline
+        text = tk.Text(
+            body, wrap="word", width=78, height=min(line_count, 45), padx=8, pady=8
+        )
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        text.config(yscrollcommand=scrollbar.set)
+        text.insert("1.0", CUSTOM_PATTERN_HELP)
+        text.config(state="disabled")
+        scrollbar.pack(side="right", fill="y")
+        text.pack(side="left", fill="both", expand=True)
+
+        buttons = ttk.Frame(window)
+        buttons.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(
+            buttons, text="Use example", command=self.use_example_pattern
+        ).pack(side="left")
+        ttk.Button(buttons, text="Close", command=window.destroy).pack(side="right")
+
+        self._help_window = window
+        return window
+
+    def use_example_pattern(self) -> None:
+        """Fills the custom-pattern fields with the documented example so the
+        user can just click Add (or edit it first)."""
+        self._custom_pattern_entry.delete(0, tk.END)
+        self._custom_pattern_entry.insert(0, CUSTOM_PATTERN_EXAMPLE_PATTERN)
+        self._custom_label_entry.delete(0, tk.END)
+        self._custom_label_entry.insert(0, CUSTOM_PATTERN_EXAMPLE_LABEL)
+        self._custom_pattern_entry.focus_set()
 
     def _refresh_rule_checkboxes(self) -> None:
         for child in self._rules_container.winfo_children():

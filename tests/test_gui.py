@@ -1,10 +1,16 @@
 import time
 import tkinter as tk
 from decimal import Decimal
+from tkinter import ttk
 
 import pytest
 
 from cost_extractor.gui import App, create_root
+from cost_extractor.money_parser import (
+    CUSTOM_PATTERN_EXAMPLE_LABEL,
+    CUSTOM_PATTERN_EXAMPLE_PATTERN,
+    CUSTOM_PATTERN_HELP,
+)
 
 
 @pytest.fixture
@@ -145,3 +151,64 @@ def test_full_app_run_and_export_wiring(app, tmp_path, simple_docx):
     summary = wb["Summary"]
     grand_total_row = list(summary.iter_rows(values_only=True))[-1]
     assert grand_total_row[3] == 1734.56
+
+
+def _descendants(widget):
+    for child in widget.winfo_children():
+        yield child
+        yield from _descendants(child)
+
+
+def test_money_formats_panel_shows_inline_hint_about_amount_group(app):
+    hints = [
+        w.cget("text")
+        for w in _descendants(app.root)
+        if isinstance(w, ttk.Label) and "(?P<amount>" in str(w.cget("text"))
+    ]
+
+    assert hints, "expected an always-visible hint mentioning (?P<amount>...)"
+
+
+def test_show_custom_pattern_help_opens_window_containing_help_text(app):
+    window = app.show_custom_pattern_help()
+
+    assert isinstance(window, tk.Toplevel)
+    assert window.winfo_exists()
+    texts = [w for w in _descendants(window) if isinstance(w, tk.Text)]
+    assert texts
+    assert CUSTOM_PATTERN_HELP.strip() in texts[0].get("1.0", tk.END)
+
+
+def test_show_custom_pattern_help_twice_reuses_the_same_window(app):
+    first = app.show_custom_pattern_help()
+    second = app.show_custom_pattern_help()
+
+    assert first is second
+    toplevels = [w for w in _descendants(app.root) if isinstance(w, tk.Toplevel)]
+    assert len(toplevels) == 1
+
+
+def test_help_window_has_use_example_button(app):
+    window = app.show_custom_pattern_help()
+
+    buttons = [
+        w
+        for w in _descendants(window)
+        if isinstance(w, ttk.Button) and "example" in str(w.cget("text")).lower()
+    ]
+    assert len(buttons) == 1
+
+
+def test_use_example_pattern_fills_entries_and_adds_cleanly(app):
+    app.use_example_pattern()
+
+    assert app._custom_pattern_entry.get() == CUSTOM_PATTERN_EXAMPLE_PATTERN
+    assert app._custom_label_entry.get() == CUSTOM_PATTERN_EXAMPLE_LABEL
+
+    app._on_add_custom_pattern()
+
+    assert any(
+        r.label == CUSTOM_PATTERN_EXAMPLE_LABEL and not r.built_in for r in app.rules
+    )
+    assert app._custom_pattern_entry.get() == ""
+    assert app._rule_error_label.cget("text") == ""

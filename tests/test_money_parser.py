@@ -2,7 +2,14 @@ from decimal import Decimal
 
 import pytest
 
-from cost_extractor.money_parser import build_custom_rule, default_rules, find_money_matches
+from cost_extractor.money_parser import (
+    CUSTOM_PATTERN_EXAMPLE_LABEL,
+    CUSTOM_PATTERN_EXAMPLE_PATTERN,
+    CUSTOM_PATTERN_HELP,
+    build_custom_rule,
+    default_rules,
+    find_money_matches,
+)
 
 
 def test_standard_rule_matches_dollar_prefixed_amount():
@@ -203,3 +210,37 @@ def test_build_custom_rule_supports_mult_and_parenthesis_negation():
 
     assert len(matches) == 1
     assert matches[0].value == Decimal("-1500000")
+
+
+def test_custom_pattern_help_documents_required_and_optional_groups():
+    assert "(?P<amount>" in CUSTOM_PATTERN_HELP
+    assert "(?P<mult>" in CUSTOM_PATTERN_HELP
+    assert "(?P<sign>" in CUSTOM_PATTERN_HELP
+
+
+def test_custom_pattern_help_example_is_accepted_and_matches_documented_inputs():
+    """The example shown in the in-app help must actually pass the validator
+    and produce the values the help text claims, so the docs can't drift
+    from the code."""
+    assert CUSTOM_PATTERN_EXAMPLE_PATTERN in CUSTOM_PATTERN_HELP
+    rule = build_custom_rule(
+        CUSTOM_PATTERN_EXAMPLE_PATTERN, CUSTOM_PATTERN_EXAMPLE_LABEL, 0
+    )
+
+    plain = find_money_matches("Fee: 45.00 EUR", [rule])
+    shorthand = find_money_matches("Budget: 1.5M EUR", [rule])
+
+    assert [m.value for m in plain] == [Decimal("45.00")]
+    assert [m.value for m in shorthand] == [Decimal("1500000")]
+
+
+def test_custom_rule_amount_group_accepts_thousands_separators_as_help_claims():
+    """The help text says the amount may contain thousands separators; the
+    shared normalizer must strip them rather than silently dropping the match."""
+    rule = build_custom_rule(
+        r"(?P<amount>\d{1,3}(?:,\d{3})*(?:\.\d{2})?)\s?EUR", None, 0
+    )
+
+    matches = find_money_matches("Total 1,234.56 EUR", [rule])
+
+    assert [m.value for m in matches] == [Decimal("1234.56")]
