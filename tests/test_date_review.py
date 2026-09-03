@@ -339,3 +339,23 @@ def test_adding_a_date_rule_through_the_panel_extends_the_checkbox_list(app):
     app._on_add_date_rule()
 
     assert len(app._date_rules_container.winfo_children()) == 2
+
+
+def test_export_report_passes_the_live_date_rules_through(app, tmp_path):
+    # export_report must hand build_workbook the app's actual date_rules,
+    # not the default None -- otherwise this would read "Undated" instead
+    # of a suggestion, same as if no rules were ever passed at all.
+    import openpyxl
+
+    full_text = "Dated 06/14/2026, amount $100.00."
+    m = _match(doc_offset=full_text.index("$100.00"))
+    _load(app, [m], full_text=full_text)
+
+    path = tmp_path / "report.xlsx"
+    error = app.export_report(path)
+
+    assert error is None
+    ws = openpyxl.load_workbook(path)["Details"]
+    header = [c.value for c in ws[1]]
+    row = [c.value for c in ws[2]]
+    assert row[header.index("Spend Date")] == "2026-06-14 (suggested, unconfirmed)"
