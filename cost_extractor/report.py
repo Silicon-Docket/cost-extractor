@@ -1,7 +1,8 @@
-"""Builds the .xlsx report (Summary, Details, and Revisions sheets) from a PipelineResult."""
+"""Builds the .xlsx report (Summary, Details, Revisions, and Spend By Month sheets) from a PipelineResult."""
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -88,6 +89,7 @@ _REVISIONS_HEADER = [
     "Location",
     "Matched Text",
     "Rule",
+    "Dimension",
     "Revised From",
     "Revised To",
     "Timestamp",
@@ -112,6 +114,7 @@ def _revision_rows(match) -> list[list]:
                 match.location,
                 match.raw_text,
                 match.rule_id,
+                "Value",
                 _as_number(previous),
                 _as_number(revision.value),
                 format_revision_timestamp(revision.at),
@@ -119,6 +122,70 @@ def _revision_rows(match) -> list[list]:
             ]
         )
         previous = revision.value
+    return rows
+
+
+def _spend_date_revision_rows(match) -> list[list]:
+    """One row per spend-date-revision event, same chaining rule as
+    _revision_rows: "Revised From" is the date immediately before that
+    revision -- "Undated" for the first one (nothing was ever confirmed
+    before it), the previous revision's date (or "Undated" if that one
+    was a confirmed no-date) for every one after."""
+    rows = []
+    previous = None
+    for revision in match.spend_date_revisions:
+        rows.append(
+            [
+                match.display_name,
+                match.location,
+                match.raw_text,
+                match.rule_id,
+                "Spend Date",
+                previous.isoformat() if previous is not None else "Undated",
+                revision.value.isoformat() if revision.value is not None else "Undated",
+                format_revision_timestamp(revision.at),
+                revision.note,
+            ]
+        )
+        previous = revision.value
+    return rows
+
+
+_SPEND_BY_MONTH_HEADER = ["Month", "Amount", "Match Count"]
+
+
+def _spend_by_month_rows(result: PipelineResult) -> list[list]:
+    """One row per calendar month with a confirmed spend date, sorted
+    chronologically, plus two final rows so every match lands in exactly
+    one bucket: a confirmed "no date applies" is a different fact from a
+    match nobody has reviewed yet, so they never share a row."""
+    by_month: dict[str, tuple[Decimal, int]] = {}
+    no_date_total = Decimal("0")
+    no_date_count = 0
+    unreviewed_total = Decimal("0")
+    unreviewed_count = 0
+
+    for doc in result.documents:
+        for m in doc.matches:
+            if not m.spend_date_reviewed:
+                unreviewed_total += m.effective_value
+                unreviewed_count += 1
+            elif m.effective_spend_date is None:
+                no_date_total += m.effective_value
+                no_date_count += 1
+            else:
+                key = m.effective_spend_date.strftime("%Y-%m")
+                total, count = by_month.get(key, (Decimal("0"), 0))
+                by_month[key] = (total + m.effective_value, count + 1)
+
+    rows = [
+        [month, _as_number(total), count]
+        for month, (total, count) in sorted(by_month.items())
+    ]
+    if no_date_count:
+        rows.append(["No Date (confirmed)", _as_number(no_date_total), no_date_count])
+    if unreviewed_count:
+        rows.append(["Not Yet Reviewed", _as_number(unreviewed_total), unreviewed_count])
     return rows
 
 
@@ -203,6 +270,13 @@ def build_workbook(
         for m in doc.matches:
             for row in _revision_rows(m):
                 revisions_ws.append(row)
+            for row in _spend_date_revision_rows(m):
+                revisions_ws.append(row)
+
+    spend_by_month_ws = wb.create_sheet("Spend By Month")
+    spend_by_month_ws.append(_SPEND_BY_MONTH_HEADER)
+    for row in _spend_by_month_rows(result):
+        spend_by_month_ws.append(row)
 
     return wb
 
