@@ -301,3 +301,45 @@ def build_custom_rule(
         enabled=True,
         built_in=False,
     )
+
+
+# A bare number, optionally parenthesised for negative. Typing the currency
+# symbol is optional in the review pane: the user is correcting a known
+# amount, not identifying one in prose, so there is no ambiguity to resolve.
+_BARE_AMOUNT = re.compile(
+    rf"^\(?\s*-?\s*(?P<amount>{_INT_OR_DECIMAL})\s*\)?$"
+)
+
+
+def parse_amount(text: str) -> Optional[Decimal]:
+    """Reads a single amount a person typed into the review pane.
+
+    Runs the built-in rules first, so "$1,240.50", "($200.00)" and "$1.5M"
+    mean here exactly what they mean inside a document — no second notion of
+    what money looks like. Falls back to a bare number, since someone
+    correcting an amount will usually just type "940.00".
+
+    Returns None when nothing parses, so the caller rejects the entry rather
+    than silently recording a wrong number.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    matches = find_money_matches(stripped, default_rules())
+    if len(matches) == 1:
+        return matches[0].value
+    if len(matches) > 1:
+        # Ambiguous ("940 or 950"): guessing which was meant is exactly the
+        # mistake this pane exists to prevent.
+        return None
+
+    bare = _BARE_AMOUNT.match(stripped)
+    if bare is None:
+        return None
+    try:
+        value = _parse_number_token(bare.group("amount"))
+    except InvalidOperation:
+        return None
+    negative = stripped.startswith("(") or "-" in stripped
+    return -value if negative else value

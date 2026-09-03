@@ -104,3 +104,26 @@ def tesseract_available() -> bool:
 def skip_if_no_tesseract(tesseract_available):
     if not tesseract_available:
         pytest.skip("vendor/tesseract/ not populated on this machine")
+
+
+@pytest.fixture
+def scan_image(tmp_path: Path) -> Path:
+    """A standalone image of a document, as a phone photo or flatbed scan
+    of a receipt would produce — no container, no text layer, OCR only."""
+    img = Image.new("RGB", (1700, 600), "white")
+    draw = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.truetype("arial.ttf", 48)
+    except OSError:
+        font = ImageFont.load_default()
+    draw.text((100, 100), "Reimbursement due: $2,345.00", fill="black", font=font)
+    path = tmp_path / "receipt.png"
+    img.save(path)
+    return path
+
+
+@pytest.fixture
+def corrupt_image(tmp_path: Path) -> Path:
+    path = tmp_path / "broken.png"
+    path.write_bytes(b"not a real png, just garbage bytes")
+    return path

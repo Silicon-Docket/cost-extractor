@@ -12,7 +12,13 @@ from typing import Iterator, Optional
 
 from cost_extractor.extractors.base import Status
 
-SUPPORTED_SUFFIXES = {".docx", ".pdf"}
+DOCUMENT_SUFFIXES = {".docx", ".pdf"}
+# Formats a phone camera or flatbed scanner actually produces. OCR is the
+# only way to read these, so they are useless with OCR switched off — but
+# they are still discovered, so the run reports them rather than dropping
+# them.
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}
+SUPPORTED_SUFFIXES = DOCUMENT_SUFFIXES | IMAGE_SUFFIXES
 ARCHIVE_SUFFIX = ".zip"
 
 MAX_ZIP_DEPTH = 5
@@ -38,13 +44,30 @@ def temp_workspace() -> Iterator[Path]:
         shutil.rmtree(d, ignore_errors=True)
 
 
-def _iter_input_files(paths: list[Path]) -> list[Path]:
-    files: list[Path] = []
+def _unsupported_reason(suffix: str) -> str:
+    """The single wording for "we can't read this", shared by both paths.
+
+    A zip member and a top-level file are equally invisible to the user
+    when the report's Message column is blank, so neither may skip it.
+    """
+    return f"unsupported file type: {suffix or '(no extension)'}"
+
+
+def _iter_input_files(paths: list[Path]) -> list[tuple[Path, bool]]:
+    """Flattens the selection, tagging each file as explicitly listed or not.
+
+    The flag drives whether an unsupported file earns a SKIPPED row. A file
+    the user named is visible in the GUI's file list, so dropping it without
+    a row reads as the app losing it; a file swept out of a folder was never
+    shown individually, and emitting a row per unrelated file would bury the
+    real results.
+    """
+    files: list[tuple[Path, bool]] = []
     for p in paths:
         if p.is_dir():
-            files.extend(sorted(f for f in p.rglob("*") if f.is_file()))
+            files.extend((f, False) for f in sorted(p.rglob("*")) if f.is_file())
         else:
-            files.append(p)
+            files.append((p, True))
     return files
 
 
@@ -113,7 +136,11 @@ def _extract_zip(
 
             if suffix not in SUPPORTED_SUFFIXES and suffix != ARCHIVE_SUFFIX:
                 out.append(
-                    DiscoveredFile(display_name=display_name, status=Status.SKIPPED)
+                    DiscoveredFile(
+                        display_name=display_name,
+                        status=Status.SKIPPED,
+                        message=_unsupported_reason(suffix),
+                    )
                 )
                 continue
 
@@ -133,7 +160,7 @@ def _extract_zip(
 
 def discover_files(paths: list[Path], workspace: Path) -> list[DiscoveredFile]:
     found: list[DiscoveredFile] = []
-    for path in _iter_input_files(paths):
+    for path, explicitly_listed in _iter_input_files(paths):
         suffix = path.suffix.lower()
         if suffix in SUPPORTED_SUFFIXES:
             found.append(
@@ -141,4 +168,12 @@ def discover_files(paths: list[Path], workspace: Path) -> list[DiscoveredFile]:
             )
         elif suffix == ARCHIVE_SUFFIX:
             _extract_zip(path, path.name, workspace, depth=1, out=found)
+        elif explicitly_listed:
+            found.append(
+                DiscoveredFile(
+                    display_name=path.name,
+                    status=Status.SKIPPED,
+                    message=_unsupported_reason(suffix),
+                )
+            )
     return found

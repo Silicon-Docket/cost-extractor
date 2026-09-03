@@ -65,6 +65,45 @@ def test_discover_files_expands_a_folder_recursively(tmp_path):
     assert names == ["nested.pdf", "top.docx"]
 
 
+def test_discover_files_reports_an_explicitly_listed_unsupported_file_as_skipped(
+    tmp_path,
+):
+    # A file the user named (picked or dragged in) is visible in the GUI's
+    # file list, so it must never vanish from the run without explanation.
+    unreadable = tmp_path / "scan_notes.heic"
+    unreadable.write_bytes(b"stub heic bytes")
+    supported = tmp_path / "invoice.pdf"
+    _make_docx_stub(supported)
+
+    with temp_workspace() as workspace:
+        found = discover_files([unreadable, supported], workspace)
+
+    skipped = [f for f in found if f.status == Status.SKIPPED]
+    assert len(skipped) == 1
+    assert skipped[0].display_name == "scan_notes.heic"
+    # The row has to say why, or it is still unexplained disappearance.
+    assert ".heic" in skipped[0].message
+
+    ok = [f for f in found if f.status is None]
+    assert [f.display_name for f in ok] == ["invoice.pdf"]
+
+
+def test_discover_files_stays_quiet_about_unsupported_files_swept_from_a_folder(
+    tmp_path,
+):
+    # Boundary guard, not a bug report: folder expansion is understood as a
+    # filter and its members were never individually listed in the GUI, so
+    # sweeping a directory must not emit a row per unrelated file.
+    _make_docx_stub(tmp_path / "a.docx")
+    (tmp_path / "notes.txt").write_bytes(b"hello")
+    (tmp_path / "clip.mov").write_bytes(b"stub movie bytes")
+
+    with temp_workspace() as workspace:
+        found = discover_files([tmp_path], workspace)
+
+    assert [f.display_name for f in found] == ["a.docx"]
+
+
 def test_discover_files_extracts_simple_zip(tmp_path):
     zip_path = tmp_path / "simple.zip"
     _make_zip(zip_path, {"a.docx": b"stub", "b.pdf": b"stub"})
@@ -102,6 +141,9 @@ def test_discover_files_skips_unsupported_type_inside_zip(tmp_path):
     skipped = [f for f in found if f.status == Status.SKIPPED]
     assert len(skipped) == 1
     assert skipped[0].display_name == "mixed.zip > notes.txt"
+    # Same explanation an unsupported top-level file gets: a blank reason
+    # in the report's Message column is the very gap this closes.
+    assert ".txt" in skipped[0].message
 
     ok = [f for f in found if f.status is None]
     assert len(ok) == 1

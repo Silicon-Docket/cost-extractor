@@ -149,7 +149,9 @@ def test_full_app_run_and_export_wiring(app, tmp_path, simple_docx):
 
     wb = openpyxl.load_workbook(out_path, data_only=True)
     summary = wb["Summary"]
-    grand_total_row = list(summary.iter_rows(values_only=True))[-1]
+    grand_total_row = next(
+        row for row in summary.iter_rows(values_only=True) if row[0] == "Grand Total"
+    )
     assert grand_total_row[3] == 1734.56
 
 
