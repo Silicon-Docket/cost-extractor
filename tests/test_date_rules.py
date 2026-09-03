@@ -66,17 +66,27 @@ def test_no_date_shaped_text_produces_no_matches():
 
 
 def test_find_dates_resolves_overlap_by_priority():
-    # A custom rule overlapping the built-in one on the same span: lower
-    # priority wins, same tie-break as find_money_matches.
-    custom = build_custom_rule(
-        r"(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})", "Custom", 0
+    # Two rules that both match the same span but parse it differently
+    # (month-first vs day-first) -- proves priority actually selects
+    # which candidate's PARSE wins, not just that dedup happened. Two
+    # rules sharing a parser and producing the same value (as with a
+    # custom rule overlapping the default month-first built-in) can't
+    # distinguish a real priority tie-break from any other dedup rule.
+    month_first = build_custom_rule(
+        r"(?P<month>\d{1,2})/(?P<day>\d{1,2})/(?P<year>\d{4})", "Month-first", 0
     )
-    custom.priority = -1  # deliberately beats the built-in's priority=0
+    day_first = build_custom_rule(
+        r"(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4})", "Day-first", 1
+    )
+    month_first.priority = -1  # deliberately beats day_first's priority=101
 
-    rules = default_rules() + [custom]
-    matches = find_dates("Dated 06/14/2026", rules)
+    matches = find_dates("13/06/2026", [month_first, day_first])
 
-    assert len(matches) == 1  # exactly one survives, not both
+    # month_first wins: month=13 is calendar-invalid -> value=None.
+    # If day_first had won instead, this would be a valid date
+    # (day=13, month=06 -> June 13, 2026).
+    assert len(matches) == 1
+    assert matches[0].value is None
 
 
 def test_find_dates_returns_matches_in_text_order():

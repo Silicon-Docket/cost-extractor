@@ -334,7 +334,7 @@ class App:
         )
         self._spend_date_entry.delete(0, tk.END)
         if match.spend_date_reviewed and match.effective_spend_date is not None:
-            self._spend_date_entry.insert(0, match.effective_spend_date.isoformat())
+            self._spend_date_entry.insert(0, match.effective_spend_date.strftime("%m/%d/%Y"))
         self._spend_date_note_entry.delete(0, tk.END)
         self._spend_date_error.config(text="")
         self._spend_date_position.config(
@@ -505,10 +505,11 @@ class App:
             progress_cb=lambda name: self._progress_queue.put(f"progress:{name}"),
             cancel_flag=self.cancel_flag,
         )
-        self.last_result = result
         self._match_documents = {
             id(m): doc for doc in result.documents for m in doc.matches
         }
+        self._date_suggestions.clear()
+        self.last_result = result
         self._progress_queue.put("done")
 
     def request_cancel(self) -> None:

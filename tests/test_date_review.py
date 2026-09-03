@@ -341,6 +341,46 @@ def test_adding_a_date_rule_through_the_panel_extends_the_checkbox_list(app):
     assert len(app._date_rules_container.winfo_children()) == 2
 
 
+def test_a_confirmed_dates_prefill_can_be_resaved_without_editing(app):
+    m = _match()
+    _load(app, [m])
+    app.confirm_spend_date(m, "06/14/2026")
+    app.open_spend_date_window()  # triggers the prefill via _refresh_spend_date_widgets
+
+    prefilled = app._spend_date_entry.get()
+    error = app.confirm_spend_date(m, prefilled)
+
+    assert error is None
+
+
+def test_date_suggestions_cache_is_cleared_between_runs(app, monkeypatch):
+    full_text_1 = "Dated 06/14/2026, amount $100.00."
+    m1 = _match(doc_offset=full_text_1.index("$100.00"))
+    _load(app, [m1], full_text=full_text_1)
+    assert app.suggest_spend_date(m1) == date(2026, 6, 14)  # seed the cache
+
+    # Simulate a second run producing a brand-new match, going through the
+    # real _run_worker path (not the _load test shortcut) so the cache
+    # invalidation this fix adds is actually exercised.
+    full_text_2 = "No dates in this one, amount $200.00."
+    m2 = _match(raw_text="$200.00", value="200.00", doc_offset=full_text_2.index("$200.00"))
+    doc2 = DocumentResult(
+        display_name="scan2.pdf",
+        status=Status.OK,
+        matches=[m2],
+        subtotal=Decimal("200.00"),
+        full_text=full_text_2,
+    )
+    result2 = PipelineResult.from_documents([doc2])
+
+    import cost_extractor.gui as gui_module
+
+    monkeypatch.setattr(gui_module, "run_pipeline", lambda *args, **kwargs: result2)
+    app._run_worker([], [])
+
+    assert app.suggest_spend_date(m2) is None  # not a stale cached value from m1's run
+
+
 def test_export_report_passes_the_live_date_rules_through(app, tmp_path):
     # export_report must hand build_workbook the app's actual date_rules,
     # not the default None -- otherwise this would read "Undated" instead

@@ -10,7 +10,7 @@ from openpyxl import Workbook
 
 from cost_extractor.pipeline import PipelineResult
 from cost_extractor.revisions import format_revision_timestamp
-from cost_extractor import date_rules
+from cost_extractor import date_rules as _date_rules
 
 _SUMMARY_HEADER = [
     "Document",
@@ -60,7 +60,9 @@ def review_label(match) -> Optional[str]:
     return REVIEW_FLAG if match.value_needs_review else None
 
 
-def spend_date_label(match, doc: "DocumentResult", rules: list["DateRule"]) -> str:
+def spend_date_label(
+    match, doc: "DocumentResult", rules: list["DateRule"], candidates=None
+) -> str:
     if match.spend_date_reviewed:
         # A human can confirm "no date applies" -- that's a completed
         # review, not a missing one, so it gets its own label rather
@@ -69,9 +71,9 @@ def spend_date_label(match, doc: "DocumentResult", rules: list["DateRule"]) -> s
         if match.effective_spend_date is None:
             return "No Date (confirmed)"
         return match.effective_spend_date.isoformat()
-    nearest = date_rules.nearest_date(
-        date_rules.find_dates(doc.full_text, rules), match.doc_offset
-    )
+    if candidates is None:
+        candidates = _date_rules.find_dates(doc.full_text, rules)
+    nearest = _date_rules.nearest_date(candidates, match.doc_offset)
     if nearest is None or nearest.value is None:
         return "Undated"
     return f"{nearest.value.isoformat()} (suggested, unconfirmed)"
@@ -247,6 +249,7 @@ def build_workbook(
     details_ws = wb.create_sheet("Details")
     details_ws.append(_DETAILS_HEADER)
     for doc in result.documents:
+        doc_date_candidates = _date_rules.find_dates(doc.full_text, active_date_rules)
         for m in doc.matches:
             details_ws.append(
                 [
@@ -259,7 +262,7 @@ def build_workbook(
                     m.confidence,
                     review_label(m),
                     m.raw_text if m.value_reviewed else None,
-                    spend_date_label(m, doc, active_date_rules),
+                    spend_date_label(m, doc, active_date_rules, doc_date_candidates),
                     REVIEW_FLAG if not m.spend_date_reviewed else None,
                 ]
             )
