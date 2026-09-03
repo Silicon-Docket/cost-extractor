@@ -27,7 +27,7 @@ def test_text_layer_match_has_no_confidence_and_needs_no_review(simple_docx):
     assert match.provenance == "text"
     assert match.confidence is None
     assert match.bbox is None
-    assert match.needs_review is False
+    assert match.value_needs_review is False
 
 
 def test_ocr_match_carries_confidence_and_a_box(
@@ -55,7 +55,7 @@ def test_a_confident_ocr_match_does_not_need_review(
         m for m in result.documents[0].matches if m.value == Decimal("2345.00")
     )
     assert match.confidence >= LOW_CONFIDENCE_THRESHOLD
-    assert match.needs_review is False
+    assert match.value_needs_review is False
 
 
 def test_grand_total_still_means_everything_combined(simple_docx):
@@ -132,4 +132,4 @@ def test_a_document_with_only_trusted_matches_is_not_flagged():
 def test_a_match_exactly_at_the_threshold_is_trusted():
     # The threshold is the lowest score still considered readable, so the
     # boundary belongs on the confident side.
-    assert _match("10.00", confidence=LOW_CONFIDENCE_THRESHOLD).needs_review is False
+    assert _match("10.00", confidence=LOW_CONFIDENCE_THRESHOLD).value_needs_review is False

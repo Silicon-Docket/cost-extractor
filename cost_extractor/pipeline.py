@@ -23,6 +23,7 @@ from cost_extractor.ingestion import (
     temp_workspace,
 )
 from cost_extractor.money_parser import MoneyFormatRule, find_money_matches
+from cost_extractor.revisions import Revision, latest_value
 
 
 # Tesseract's confidence scale is 0-100. 60 is a starting point, not a
@@ -58,26 +59,28 @@ class MatchRecord:
     # a live image so the record outlives its source file. Present only for
     # OCR-derived amounts; a text-layer read has nothing to look at.
     crop_png: Optional[bytes] = field(default=None, repr=False)
-    # What a human decided this amount really is, after looking at the crop.
-    # Set even when they agree with the reading: confirming is a judgement,
-    # and an unset value has to keep meaning "nobody has looked".
-    corrected_value: Optional[Decimal] = None
+    # Every human decision about this amount's value, in order — never
+    # overwritten. The only sanctioned way to add to this is
+    # `record_revision`; nothing else should append/clear/reassign it
+    # directly (same convention-over-enforcement discipline
+    # money_parser.py already uses for MoneyFormatRule.enabled).
+    value_revisions: list[Revision[Decimal]] = field(default_factory=list)
 
     @property
-    def reviewed(self) -> bool:
-        return self.corrected_value is not None
+    def value_reviewed(self) -> bool:
+        return bool(self.value_revisions)
 
     @property
     def effective_value(self) -> Decimal:
         """What this amount is worth, preferring a human's reading."""
-        return self.value if self.corrected_value is None else self.corrected_value
+        return latest_value(self.value_revisions, self.value)
 
     @property
-    def needs_review(self) -> bool:
+    def value_needs_review(self) -> bool:
         # Confidence is a weak signal — Tesseract read $940.00 as $440.00 at
         # 84% — so this flags the obviously-doubtful, and a human's decision
         # always outranks it.
-        if self.reviewed or self.confidence is None:
+        if self.value_reviewed or self.confidence is None:
             return False
         return self.confidence < LOW_CONFIDENCE_THRESHOLD
 
@@ -92,7 +95,7 @@ class DocumentResult:
 
     @property
     def needs_review(self) -> bool:
-        return any(m.needs_review for m in self.matches)
+        return any(m.value_needs_review for m in self.matches)
 
     @property
     def effective_subtotal(self) -> Decimal:
@@ -127,7 +130,7 @@ class PipelineResult:
                 m.effective_value
                 for doc in self.documents
                 for m in doc.matches
-                if m.needs_review
+                if m.value_needs_review
             ),
             Decimal("0"),
         )
@@ -166,7 +169,7 @@ class PipelineResult:
             1
             for doc in self.documents
             for m in doc.matches
-            if m.provenance == "ocr" and not m.reviewed
+            if m.provenance == "ocr" and not m.value_reviewed
         )
 
 
