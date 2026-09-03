@@ -380,6 +380,15 @@ def test_accept_reading_with_no_note_defaults_to_confirmed(app):
     assert m.value_revisions[-1].note == "confirmed"
 
 
+def test_accept_reading_treats_a_whitespace_only_note_as_blank(app):
+    m = _match("340.00", confidence=84.0)
+    _load(app, [m])
+
+    app.accept_reading(m, note="   ")
+
+    assert m.value_revisions[-1].note == "confirmed"
+
+
 def test_accept_reading_with_an_explicit_note_uses_it_instead(app):
     m = _match("340.00", confidence=84.0)
     _load(app, [m])
@@ -399,14 +408,32 @@ def test_use_second_opinion_with_no_note_names_the_model_as_the_source(app, monk
     assert m.value_revisions[-1].note == "adopted handwriting model's second opinion"
 
 
-def test_use_second_opinion_with_an_explicit_note_uses_it_instead(app, monkeypatch):
+def test_use_second_opinion_composes_an_explicit_note_with_the_provenance(
+    app, monkeypatch
+):
     _fake_backend(monkeypatch, "$940.00")
     m = _match("440.00", confidence=82.0)
     _load(app, [m])
 
     app.use_second_opinion(m, note="cross-checked with the vendor")
 
-    assert m.value_revisions[-1].note == "cross-checked with the vendor"
+    assert m.value_revisions[-1].note == (
+        "cross-checked with the vendor (adopted handwriting model's second opinion)"
+    )
+
+
+def test_use_second_opinion_preserves_model_provenance_even_with_a_human_note(
+    app, monkeypatch
+):
+    _fake_backend(monkeypatch, "$940.00")
+    m = _match("440.00", confidence=82.0)
+    _load(app, [m])
+
+    app.use_second_opinion(m, note="looked closer")
+
+    note = m.value_revisions[-1].note
+    assert "adopted handwriting model's second opinion" in note
+    assert "looked closer" in note
 
 
 def test_caption_shows_not_yet_reviewed_before_any_revision(app):
@@ -427,6 +454,9 @@ def test_caption_shows_reviewed_once_after_a_single_revision(app):
     text = app._review_caption.cget("text")
     assert "reviewed once" in text
     assert "940.00" in text
+    # A Revision.value is shown bare, never $-prefixed -- the caption's only
+    # $ belongs to "read as $440.00", the original raw_text.
+    assert "$940.00" not in text
 
 
 def test_caption_shows_a_revision_count_after_more_than_one(app):

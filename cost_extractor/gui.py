@@ -178,12 +178,13 @@ class App:
     def accept_reading(self, match: MatchRecord, note: Optional[str] = None) -> None:
         """Confirms OCR got it right. Still a decision, so still recorded.
 
-        Defaults the note to "confirmed" when left blank: this is the one
-        case where the value doesn't change, so the note is the only
-        signal that a human deliberately reviewed it rather than it
-        happening to match by coincidence.
+        Defaults the note to "confirmed" when left blank (or whitespace):
+        this is the one case where the value doesn't change, so the note
+        is the only signal that a human deliberately reviewed it rather
+        than it happening to match by coincidence.
         """
-        record_revision(match.value_revisions, match.value, note=note or "confirmed")
+        cleaned = (note or "").strip() or None
+        record_revision(match.value_revisions, match.value, note=cleaned or "confirmed")
         self._after_review_change()
 
     def second_opinion(self, match: MatchRecord) -> Optional[str]:
@@ -221,17 +222,20 @@ class App:
 
         Routed through the same parsing and recording as a typed
         correction, so a suggestion can never slip into the totals without
-        someone choosing it. Defaults the note to name the model as the
-        source when left blank: "typed by the human" vs. "the human
-        accepted the model's suggestion" is a real provenance distinction
-        neither the value nor the Revised-From/To pair shows on its own.
+        someone choosing it. The note always records that this value came
+        from the model, even when the reviewer also adds their own note —
+        a human's free-text note must never erase that provenance signal,
+        since a value adopted from a model measured at 5/20 accuracy is a
+        materially different kind of correction than one a reviewer typed
+        independently, and the exported audit trail exists to show that.
         """
         reading = self.second_opinion(match)
         if not reading:
             return "No second reading available for this amount."
-        return self.apply_correction(
-            match, reading, note=note or "adopted handwriting model's second opinion"
-        )
+        cleaned = (note or "").strip() or None
+        provenance = "adopted handwriting model's second opinion"
+        combined_note = f"{cleaned} ({provenance})" if cleaned else provenance
+        return self.apply_correction(match, reading, note=combined_note)
 
     def current_review_match(self) -> Optional[MatchRecord]:
         queue = self.reviewable_matches()
