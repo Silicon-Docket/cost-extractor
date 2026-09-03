@@ -14,9 +14,9 @@ _FIRST = datetime(2026, 9, 3, 10, 14, tzinfo=timezone.utc)
 _SECOND = datetime(2026, 9, 3, 10, 22, tzinfo=timezone.utc)
 
 
-def _match(value: str, confidence=None) -> MatchRecord:
+def _match(value: str, confidence=None, display_name="scan.pdf") -> MatchRecord:
     return MatchRecord(
-        display_name="scan.pdf",
+        display_name=display_name,
         location="page 1",
         raw_text=f"${value}",
         rule_id="standard",
@@ -237,6 +237,38 @@ def test_revisions_sheet_disambiguates_matches_sharing_a_location(tmp_path):
     ]
 
     assert matched_text == ["$100.00", "$200.00"]
+
+
+def test_revisions_sheet_orders_by_document_then_match_not_by_timestamp(tmp_path):
+    # The spec commits to document-then-match-then-revision order, NOT a
+    # global chronological sort -- interleave timestamps across two
+    # documents to prove it's the former.
+    a = _match("100.00", confidence=90.0, display_name="doc_a.pdf")
+    record_revision(a.value_revisions, Decimal("150.00"), now=_SECOND)  # later timestamp
+    b = _match("200.00", confidence=90.0, display_name="doc_b.pdf")
+    record_revision(b.value_revisions, Decimal("250.00"), now=_FIRST)  # earlier timestamp
+    result = PipelineResult.from_documents(
+        [
+            DocumentResult(
+                display_name="doc_a.pdf", status=Status.OK,
+                matches=[a], subtotal=Decimal("100.00"),
+            ),
+            DocumentResult(
+                display_name="doc_b.pdf", status=Status.OK,
+                matches=[b], subtotal=Decimal("200.00"),
+            ),
+        ]
+    )
+    path = tmp_path / "report.xlsx"
+    save_workbook(build_workbook(result), path)
+    ws = openpyxl.load_workbook(path)["Revisions"]
+
+    source_files = [
+        row[0] for row in ws.iter_rows(min_row=2, values_only=True)
+    ]
+    # doc_a comes first (document order), even though doc_b's revision has
+    # the earlier timestamp -- proves this is not a global time sort.
+    assert source_files == ["doc_a.pdf", "doc_b.pdf"]
 
 
 def test_review_label_reads_checked_when_a_reverted_correction_lands_back_on_the_original():
