@@ -799,8 +799,8 @@ Add these methods to `App`, placed after `use_second_opinion` (`cost_extractor/g
     def _refresh_category_widgets(self) -> None:
         # Guards exactly like _refresh_review_widgets: safe to call even
         # when the "Categorize Amounts..." window (Task 5) isn't open.
-        # Task 5 extends this method's body once the window exists; it
-        # does not replace this guard.
+        # Task 5 extends this method's body once the window exists to
+        # refresh; it does not replace this guard.
         window = self._category_window
         if window is None or not window.winfo_exists():
             return
