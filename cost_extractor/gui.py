@@ -7,6 +7,7 @@ import queue
 import threading
 import tkinter as tk
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
@@ -28,6 +29,7 @@ except Exception:  # noqa: BLE001 - Pillow's Tk bridge needs a Tk-enabled build
     ImageTk = None
 
 from cost_extractor import handwriting
+from cost_extractor import date_rules
 from cost_extractor.revisions import format_revision_timestamp, record_revision
 from cost_extractor.money_parser import (
     CUSTOM_PATTERN_EXAMPLE_LABEL,
@@ -85,6 +87,18 @@ class App:
         self.review_index = 0
         self._review_photo = None
         self._second_opinions: dict[int, Optional[str]] = {}
+        self.date_rules: list[date_rules.DateRule] = date_rules.default_rules()
+        # Same id(match)-keyed cache shape as _second_opinions -- must be
+        # invalidated whenever self.date_rules changes (Task 4).
+        self._date_suggestions: dict[int, "Optional[date]"] = {}
+        # Built once per run (in _run_worker, below) so a match can find
+        # its owning document -- every existing flow iterates
+        # "for doc in ... for m in doc.matches" and never needed the
+        # reverse direction until now.
+        self._match_documents: dict[int, DocumentResult] = {}
+        self._custom_date_rule_count = 0
+        self._spend_date_window: Optional[tk.Toplevel] = None
+        self.spend_date_review_index = 0
 
         self._build_widgets()
         self._refresh_rule_checkboxes()
@@ -237,6 +251,76 @@ class App:
         combined_note = f"{cleaned} ({provenance})" if cleaned else provenance
         return self.apply_correction(match, reading, note=combined_note)
 
+    def _document_for(self, match: MatchRecord) -> DocumentResult:
+        return self._match_documents[id(match)]
+
+    def suggest_spend_date(self, match: MatchRecord) -> Optional[date]:
+        """The nearest date-like text found anywhere in this match's
+        document, computed on demand and cached per match. Recomputed
+        only when the cache is explicitly invalidated (rule changes --
+        see Task 4), never on a timer or a document reload."""
+        cached = self._date_suggestions.get(id(match), _UNREAD)
+        if cached is not _UNREAD:
+            return cached
+        document = self._document_for(match)
+        candidates = date_rules.find_dates(document.full_text, self.date_rules)
+        nearest = date_rules.nearest_date(candidates, match.doc_offset)
+        # nearest_date returns the closest DateMatch (or None), not a
+        # bare date -- .value is None when the closest date-shaped text
+        # nearby failed to parse, and that's still "no suggestion," not
+        # license to fall back to a more distant candidate.
+        suggestion = nearest.value if nearest is not None else None
+        self._date_suggestions[id(match)] = suggestion
+        return suggestion
+
+    def confirm_spend_date(
+        self, match: MatchRecord, date_str: str, note: Optional[str] = None
+    ) -> Optional[str]:
+        """Records a human-typed spend date. Parses date_str with the
+        same date_rules the suggestion engine uses, so a typed correction
+        is held to the same format understanding as a suggestion."""
+        found = date_rules.find_dates(date_str, self.date_rules)
+        parsed = next((m.value for m in found if m.value is not None), None)
+        if parsed is None:
+            return "Couldn't recognize that as a date"
+        record_revision(match.spend_date_revisions, parsed, note=note)
+        self._after_spend_date_change()
+        return None
+
+    def accept_date_suggestion(
+        self, match: MatchRecord, note: Optional[str] = None
+    ) -> Optional[str]:
+        suggestion = self.suggest_spend_date(match)
+        if suggestion is None:
+            return "No date suggestion available for this document."
+        cleaned = (note or "").strip() or None
+        record_revision(match.spend_date_revisions, suggestion, note=cleaned or "confirmed")
+        self._after_spend_date_change()
+        return None
+
+    def confirm_no_date(self, match: MatchRecord, note: Optional[str] = None) -> None:
+        """The reviewer's explicit "no date applies" decision -- available
+        regardless of whether a suggestion exists, distinct from
+        accept_date_suggestion's automatic refusal when there is nothing
+        to accept. Makes spend_date_reviewed=True with
+        effective_spend_date=None a state the app produces on purpose."""
+        record_revision(
+            match.spend_date_revisions, None, note=note or "confirmed no associated date"
+        )
+        self._after_spend_date_change()
+
+    def _after_spend_date_change(self) -> None:
+        self._refresh_spend_date_widgets()
+
+    def _refresh_spend_date_widgets(self) -> None:
+        # Guards exactly like _refresh_review_widgets: safe to call even
+        # when the "Confirm Spend Dates..." window (Task 5) isn't open.
+        # Task 5 extends this method's body once the window exists to
+        # refresh; it does not replace this guard.
+        window = self._spend_date_window
+        if window is None or not window.winfo_exists():
+            return
+
     def current_review_match(self) -> Optional[MatchRecord]:
         queue = self.reviewable_matches()
         if not queue:
@@ -295,6 +379,9 @@ class App:
             cancel_flag=self.cancel_flag,
         )
         self.last_result = result
+        self._match_documents = {
+            id(m): doc for doc in result.documents for m in doc.matches
+        }
         self._progress_queue.put("done")
 
     def request_cancel(self) -> None:
