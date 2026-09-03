@@ -210,7 +210,7 @@ silently drops an unreviewed or dateless amount. The Summary sheet adds a
 ### Adding a custom date-format pattern
 
 The built-in numeric format won't cover every document — a day-first
-convention or a two-digit year, for instance. In the **Date Formats**
+convention, for instance. In the **Date Formats**
 panel, use the **Custom pattern** row to add your own, the same way you
 would in the Money Formats panel:
 

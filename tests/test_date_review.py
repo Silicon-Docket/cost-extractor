@@ -373,12 +373,18 @@ def test_date_suggestions_cache_is_cleared_between_runs(app, monkeypatch):
     )
     result2 = PipelineResult.from_documents([doc2])
 
+    # Plant a stale entry at m2's own id -- this is what id() reuse
+    # produces in a real second run (a freed match's id handed to a new
+    # MatchRecord). Without the fix's cache.clear(), suggest_spend_date
+    # would return this leaked value instead of recomputing.
+    app._date_suggestions[id(m2)] = date(2026, 1, 1)
+
     import cost_extractor.gui as gui_module
 
     monkeypatch.setattr(gui_module, "run_pipeline", lambda *args, **kwargs: result2)
     app._run_worker([], [])
 
-    assert app.suggest_spend_date(m2) is None  # not a stale cached value from m1's run
+    assert app.suggest_spend_date(m2) is None  # not the stale date planted above
 
 
 def test_export_report_passes_the_live_date_rules_through(app, tmp_path):
