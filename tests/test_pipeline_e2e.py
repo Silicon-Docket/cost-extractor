@@ -34,8 +34,11 @@ def test_full_pipeline_over_mixed_fixtures_default_rules(
     save_workbook(build_workbook(result), out_path)
     reloaded = openpyxl.load_workbook(out_path, data_only=True)
     summary = reloaded["Summary"]
-    grand_total_row = [row for row in summary.iter_rows(values_only=True)][-1]
-    assert grand_total_row[0] == "Grand Total"
+    grand_total_row = next(
+        row
+        for row in summary.iter_rows(values_only=True)
+        if row[0] == "Grand Total"
+    )
     assert Decimal(str(grand_total_row[3])) == expected_total
 
 

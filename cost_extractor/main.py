@@ -23,11 +23,24 @@ def _run_selftest(target: Path, out_path: Optional[Path] = None) -> Path:
 
     tess_dir = ocr_setup.get_tesseract_dir()
     tess_exe = tess_dir / ocr_setup.get_tesseract_executable_name()
+
+    # The review pane degrades to "(no image available)" on every crop if
+    # Pillow's Tk bridge didn't make it into the bundle. That failure is
+    # silent and only visible in the GUI, which CI never opens — so report
+    # it here, where a packaged build is actually exercised.
+    try:
+        from PIL import ImageTk  # noqa: F401
+
+        crops_displayable = True
+    except Exception:  # noqa: BLE001
+        crops_displayable = False
+
     lines = [
         f"frozen={getattr(sys, 'frozen', False)}",
         f"meipass={getattr(sys, '_MEIPASS', None)}",
         f"tesseract_dir={tess_dir}",
         f"tesseract_exe_exists={tess_exe.exists()}",
+        f"crops_displayable={crops_displayable}",
     ]
     result = run_pipeline([target], default_rules())
     for doc in result.documents:

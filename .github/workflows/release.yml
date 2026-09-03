@@ -147,6 +147,12 @@ jobs:
             Write-Error "OCR selftest did not produce the expected grand_total=2345.00 -- OCR is broken in the packaged build"
             exit 1
           }
+          # Without Pillow's Tk bridge the review pane silently shows no
+          # crops, and nothing else in CI opens the GUI to notice.
+          if ($output -notmatch "crops_displayable=True") {
+            Write-Error "PIL.ImageTk is missing from the bundle -- the review pane cannot show crops"
+            exit 1
+          }
 
       - name: Zip portable build
         id: zip
@@ -228,6 +234,10 @@ jobs:
           echo "$output"
           if ! echo "$output" | grep -q "grand_total=2345.00"; then
             echo "::error::OCR selftest did not produce the expected grand_total=2345.00 -- OCR is broken in the packaged build"
+            exit 1
+          fi
+          if ! echo "$output" | grep -q "crops_displayable=True"; then
+            echo "::error::PIL.ImageTk is missing from the bundle -- the review pane cannot show crops"
             exit 1
           fi
 

@@ -1,0 +1,9 @@
+# OPTIONAL extras for the handwriting second-opinion model.
+#
+# Deliberately not in requirements.txt: no packaged build ships the model,
+# onnxruntime is ~15 MB of native libraries, and the app works completely
+# without either. Install only if you are vendoring a model — see the
+# README's "Optional: a second opinion on handwriting" section, including
+# the measured accuracy before you rely on it.
+onnxruntime==1.29.0
+tokenizers==0.23.1

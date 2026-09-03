@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import queue
 import threading
 import tkinter as tk
@@ -17,6 +18,17 @@ try:
 except Exception:  # noqa: BLE001 - native Tcl package can fail to load
     _HAS_DND = False
 
+from PIL import Image
+
+try:
+    from PIL import ImageTk
+except Exception:  # noqa: BLE001 - Pillow's Tk bridge needs a Tk-enabled build
+    # The review pane still works without it; it just cannot show the crop,
+    # which must never stop the app from starting.
+    ImageTk = None
+
+from cost_extractor import handwriting
+from cost_extractor.revisions import format_revision_timestamp, record_revision
 from cost_extractor.money_parser import (
     CUSTOM_PATTERN_EXAMPLE_LABEL,
     CUSTOM_PATTERN_EXAMPLE_PATTERN,
@@ -24,9 +36,26 @@ from cost_extractor.money_parser import (
     MoneyFormatRule,
     build_custom_rule,
     default_rules,
+    parse_amount,
 )
-from cost_extractor.pipeline import DocumentResult, PipelineResult, run_pipeline
-from cost_extractor.report import build_workbook, save_workbook
+from cost_extractor.ingestion import ARCHIVE_SUFFIX, SUPPORTED_SUFFIXES
+from cost_extractor.pipeline import (
+    DocumentResult,
+    MatchRecord,
+    PipelineResult,
+    run_pipeline,
+)
+from cost_extractor.report import (
+    REVIEW_FLAG,
+    build_workbook,
+    review_label,
+    save_workbook,
+)
+
+
+# Distinguishes "not asked yet" from "asked, and the model said nothing",
+# so a null reading isn't recomputed on every repaint.
+_UNREAD = object()
 
 
 def create_root() -> tk.Tk:
@@ -52,6 +81,10 @@ class App:
         self._custom_rule_count = 0
         self._worker_thread: Optional[threading.Thread] = None
         self._help_window: Optional[tk.Toplevel] = None
+        self._review_window: Optional[tk.Toplevel] = None
+        self.review_index = 0
+        self._review_photo = None
+        self._second_opinions: dict[int, Optional[str]] = {}
 
         self._build_widgets()
         self._refresh_rule_checkboxes()
@@ -99,6 +132,130 @@ class App:
 
     def can_run(self) -> bool:
         return bool(self.selected_paths) and any(r.enabled for r in self.rules)
+
+    # ---- reviewing what OCR guessed ----
+
+    def reviewable_matches(self, pending_only: bool = False) -> list[MatchRecord]:
+        """Every OCR-derived amount, worst-scoring first.
+
+        Deliberately not filtered by confidence. Tesseract read $940.00 as
+        $440.00 at 84% confidence, so a threshold cannot decide which
+        guesses are safe to skip — only a person looking at the crop can.
+        Sorting by score just means the most obviously doubtful get seen
+        first if the user stops partway.
+        """
+        if self.last_result is None:
+            return []
+        matches = [
+            m
+            for doc in self.last_result.documents
+            for m in doc.matches
+            if m.provenance == "ocr" and not (pending_only and m.value_reviewed)
+        ]
+        return sorted(
+            matches, key=lambda m: m.confidence if m.confidence is not None else 0.0
+        )
+
+    def can_review(self) -> bool:
+        return bool(self.reviewable_matches())
+
+    def apply_correction(
+        self, match: MatchRecord, text: str, note: Optional[str] = None
+    ) -> Optional[str]:
+        """Records a human's reading. Returns an error message, or None.
+
+        No default note: the Revised-From/To pair in the export already
+        shows a change happened, so free text remains the richer channel
+        for *why* rather than an auto-label.
+        """
+        value = parse_amount(text)
+        if value is None:
+            return "Enter an amount, e.g. 940.00 or ($200.00)"
+        record_revision(match.value_revisions, value, note=note)
+        self._after_review_change()
+        return None
+
+    def accept_reading(self, match: MatchRecord, note: Optional[str] = None) -> None:
+        """Confirms OCR got it right. Still a decision, so still recorded.
+
+        Defaults the note to "confirmed" when left blank (or whitespace):
+        this is the one case where the value doesn't change, so the note
+        is the only signal that a human deliberately reviewed it rather
+        than it happening to match by coincidence.
+        """
+        cleaned = (note or "").strip() or None
+        record_revision(match.value_revisions, match.value, note=cleaned or "confirmed")
+        self._after_review_change()
+
+    def second_opinion(self, match: MatchRecord) -> Optional[str]:
+        """What the optional handwriting model makes of the same crop.
+
+        Absent in every packaged build unless a model has been vendored
+        deliberately. Never a value on its own — it is shown next to the
+        primary reading so a person can weigh the two.
+        """
+        if not match.crop_png or not handwriting.is_available():
+            return None
+        cached = self._second_opinions.get(id(match), _UNREAD)
+        if cached is not _UNREAD:
+            return cached
+        try:
+            reading = handwriting.read_line(Image.open(io.BytesIO(match.crop_png)))
+        except Exception:  # noqa: BLE001 - a second opinion is never worth a crash
+            reading = None
+        self._second_opinions[id(match)] = reading
+        return reading
+
+    def second_opinion_disagrees(self, match: MatchRecord) -> bool:
+        """Whether the two engines read different numbers.
+
+        Worth more than either confidence score: Tesseract read $940.00 as
+        $440.00 at 82%, which no threshold catches, but a second engine
+        reading it differently would have.
+        """
+        return handwriting.disagrees(match.raw_text, self.second_opinion(match))
+
+    def use_second_opinion(
+        self, match: MatchRecord, note: Optional[str] = None
+    ) -> Optional[str]:
+        """Adopts the model's reading, as a human decision.
+
+        Routed through the same parsing and recording as a typed
+        correction, so a suggestion can never slip into the totals without
+        someone choosing it. The note always records that this value came
+        from the model, even when the reviewer also adds their own note —
+        a human's free-text note must never erase that provenance signal,
+        since a value adopted from a model measured at 5/20 accuracy is a
+        materially different kind of correction than one a reviewer typed
+        independently, and the exported audit trail exists to show that.
+        """
+        reading = self.second_opinion(match)
+        if not reading:
+            return "No second reading available for this amount."
+        cleaned = (note or "").strip() or None
+        provenance = "adopted handwriting model's second opinion"
+        combined_note = f"{cleaned} ({provenance})" if cleaned else provenance
+        return self.apply_correction(match, reading, note=combined_note)
+
+    def current_review_match(self) -> Optional[MatchRecord]:
+        queue = self.reviewable_matches()
+        if not queue:
+            return None
+        return queue[min(self.review_index, len(queue) - 1)]
+
+    def next_review(self) -> None:
+        queue = self.reviewable_matches()
+        if queue:
+            self.review_index = min(self.review_index + 1, len(queue) - 1)
+        self._refresh_review_widgets()
+
+    def previous_review(self) -> None:
+        self.review_index = max(0, self.review_index - 1)
+        self._refresh_review_widgets()
+
+    def _after_review_change(self) -> None:
+        self._refresh_preview_widget()
+        self._refresh_review_widgets()
 
     def _snapshot_active_rules(self) -> list[MoneyFormatRule]:
         """Independent copies of the currently-enabled rules.
@@ -253,6 +410,11 @@ class App:
         ttk.Button(run_frame, text="Cancel", command=self.request_cancel).pack(
             side="left", padx=4
         )
+        self._review_button = ttk.Button(
+            run_frame, text="Review Amounts...", command=self.open_review_window
+        )
+        self._review_button.pack(side="left", padx=4)
+        self._review_button.state(["disabled"])
         ttk.Button(
             run_frame, text="Save Report...", command=self._on_export
         ).pack(side="left", padx=4)
@@ -261,16 +423,230 @@ class App:
 
         preview_frame = ttk.LabelFrame(self.root, text="Preview")
         preview_frame.pack(fill="both", expand=True, padx=8, pady=4)
-        columns = ("source", "location", "text", "rule", "value", "status")
+        columns = (
+            "source",
+            "location",
+            "text",
+            "rule",
+            "value",
+            "status",
+            "read_as",
+            "confidence",
+            "review",
+        )
         self._preview_tree = ttk.Treeview(
             preview_frame, columns=columns, show="headings", height=10
         )
         for col, label in zip(
             columns,
-            ["Source File", "Location", "Matched Text", "Rule", "Value", "Status"],
+            [
+                "Source File",
+                "Location",
+                "Matched Text",
+                "Rule",
+                "Value",
+                "Status",
+                "Read As",
+                "Confidence",
+                "Review",
+            ],
         ):
             self._preview_tree.heading(col, text=label)
         self._preview_tree.pack(fill="both", expand=True)
+
+    def open_review_window(self) -> Optional[tk.Toplevel]:
+        """Opens (or raises) the pane for checking guessed amounts by eye."""
+        existing = self._review_window
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_set()
+            self._refresh_review_widgets()
+            return existing
+
+        if not self.can_review():
+            return None
+
+        window = tk.Toplevel(self.root)
+        window.title("Review guessed amounts")
+        self._review_window = window
+
+        ttk.Label(
+            window,
+            text=(
+                "These amounts were recognised from pixels, not read from a "
+                "text layer.\nCheck each against the image before trusting "
+                "the total."
+            ),
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(10, 6))
+
+        self._review_crop_label = ttk.Label(window, relief="sunken", anchor="center")
+        self._review_crop_label.pack(padx=10, pady=6)
+
+        self._review_caption = ttk.Label(window, justify="left")
+        self._review_caption.pack(anchor="w", padx=10)
+
+        second_row = ttk.Frame(window)
+        second_row.pack(fill="x", padx=10, pady=(4, 0))
+        self._second_opinion_label = ttk.Label(second_row, justify="left")
+        self._second_opinion_label.pack(side="left")
+        self._second_opinion_button = ttk.Button(
+            second_row, text="Use this", command=self._on_use_second_opinion
+        )
+
+        entry_row = ttk.Frame(window)
+        entry_row.pack(fill="x", padx=10, pady=6)
+        ttk.Label(entry_row, text="Amount:").pack(side="left")
+        self._review_entry = ttk.Entry(entry_row, width=18)
+        self._review_entry.pack(side="left", padx=6)
+        ttk.Button(entry_row, text="Save correction", command=self._on_save_correction).pack(
+            side="left"
+        )
+        ttk.Button(entry_row, text="Looks right", command=self._on_accept_reading).pack(
+            side="left", padx=4
+        )
+
+        note_row = ttk.Frame(window)
+        note_row.pack(fill="x", padx=10)
+        ttk.Label(note_row, text="Note (optional):").pack(side="left")
+        self._review_note_entry = ttk.Entry(note_row, width=40)
+        self._review_note_entry.pack(side="left", padx=6, fill="x", expand=True)
+
+        self._review_error = ttk.Label(window, foreground="red")
+        self._review_error.pack(anchor="w", padx=10)
+
+        nav = ttk.Frame(window)
+        nav.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(nav, text="< Previous", command=self.previous_review).pack(side="left")
+        ttk.Button(nav, text="Next >", command=self.next_review).pack(side="left", padx=4)
+        self._review_position = ttk.Label(nav)
+        self._review_position.pack(side="left", padx=10)
+
+        self.review_index = 0
+        self._refresh_review_widgets()
+        return window
+
+    def _read_note_entry(self) -> Optional[str]:
+        return self._review_note_entry.get().strip() or None
+
+    def _on_save_correction(self) -> None:
+        match = self.current_review_match()
+        if match is None:
+            return
+        error = self.apply_correction(
+            match, self._review_entry.get(), note=self._read_note_entry()
+        )
+        self._review_error.config(text=error or "")
+        if error is None:
+            self.next_review()
+
+    def _on_accept_reading(self) -> None:
+        match = self.current_review_match()
+        if match is None:
+            return
+        self.accept_reading(match, note=self._read_note_entry())
+        self._review_error.config(text="")
+        self.next_review()
+
+    def _revision_summary(self, match: MatchRecord) -> str:
+        """The parenthetical after "read as $X" -- confidence, plus once
+        reviewed, what changed and when. A bare Decimal is shown without a
+        $ prefix, matching how effective_value is shown everywhere else in
+        this app (the review entry field, the preview table)."""
+        confidence = "unknown" if match.confidence is None else f"{match.confidence:.0f}%"
+        count = len(match.value_revisions)
+        if count == 0:
+            return f"(confidence {confidence}, not yet reviewed)"
+
+        latest = match.value_revisions[-1]
+        when = format_revision_timestamp(latest.at)
+        note_suffix = f" ({latest.note})" if latest.note else ""
+        if count == 1:
+            return (
+                f"(confidence {confidence}) — reviewed once: "
+                f"{latest.value} at {when}{note_suffix}"
+            )
+        return (
+            f"(confidence {confidence}) — reviewed {count}x, latest: "
+            f"{latest.value} at {when}{note_suffix}"
+        )
+
+    def _refresh_review_widgets(self) -> None:
+        window = self._review_window
+        if window is None or not window.winfo_exists():
+            return
+
+        queue = self.reviewable_matches()
+        match = self.current_review_match()
+        if match is None:
+            self._review_caption.config(text="Nothing left to review.")
+            self._review_position.config(text="")
+            return
+
+        self._show_crop(match)
+
+        self._review_caption.config(
+            text=(
+                f"{match.display_name} — {match.location}\n"
+                f"read as {match.raw_text}  {self._revision_summary(match)}"
+            )
+        )
+        self._review_entry.delete(0, tk.END)
+        self._review_entry.insert(0, str(match.effective_value))
+        self._review_note_entry.delete(0, tk.END)
+        self._review_position.config(
+            text=f"{self.review_index + 1} of {len(queue)}"
+        )
+        self._refresh_second_opinion_widgets(match)
+
+    def _refresh_second_opinion_widgets(self, match: MatchRecord) -> None:
+        """Shows the handwriting model's reading, when one is installed."""
+        reading = self.second_opinion(match)
+        if not reading:
+            self._second_opinion_label.config(text="")
+            self._second_opinion_button.pack_forget()
+            return
+
+        if self.second_opinion_disagrees(match):
+            # Two engines reading different numbers is the strongest signal
+            # available that this one needs a careful look.
+            text = f"Handwriting model reads: {reading}   (DISAGREES — check carefully)"
+        else:
+            text = f"Handwriting model reads: {reading}   (agrees)"
+        self._second_opinion_label.config(text=text)
+        self._second_opinion_button.pack(side="left", padx=8)
+
+    def _on_use_second_opinion(self) -> None:
+        match = self.current_review_match()
+        if match is None:
+            return
+        error = self.use_second_opinion(match, note=self._read_note_entry())
+        self._review_error.config(text=error or "")
+        if error is None:
+            self.next_review()
+
+    def _show_crop(self, match: MatchRecord) -> None:
+        """Displays the pixels the amount was read from, if there are any."""
+        if ImageTk is None or not match.crop_png:
+            # A crop can legitimately be missing (render failure, or the
+            # source could not be reopened). The amount still needs a
+            # decision; it just has to be made without the picture.
+            self._review_crop_label.config(
+                image="", text="(no image available for this amount)"
+            )
+            self._review_photo = None
+            return
+        image = Image.open(io.BytesIO(match.crop_png))
+        # Small crops are hard to judge at native size; never shrink one.
+        scale = max(1, min(4, 220 // max(1, image.height)))
+        if scale > 1:
+            image = image.resize(
+                (image.width * scale, image.height * scale), Image.LANCZOS
+            )
+        # Held on the instance because Tk keeps only a weak reference to a
+        # PhotoImage; letting it be collected blanks the label.
+        self._review_photo = ImageTk.PhotoImage(image)
+        self._review_crop_label.config(image=self._review_photo, text="")
 
     def show_custom_pattern_help(self) -> tk.Toplevel:
         """Opens (or raises, if already open) the custom-pattern guide."""
@@ -339,6 +715,20 @@ class App:
                     command=lambda rid=rule.id: self.remove_custom_rule(rid),
                 ).pack(side="left")
 
+    def _refresh_review_button_state(self) -> None:
+        """Enables review only when something was actually guessed."""
+        if not hasattr(self, "_review_button"):
+            return
+        pending = len(self.reviewable_matches(pending_only=True))
+        if self.can_review():
+            self._review_button.state(["!disabled"])
+            self._review_button.config(
+                text=f"Review Amounts... ({pending})" if pending else "Review Amounts..."
+            )
+        else:
+            self._review_button.state(["disabled"])
+            self._review_button.config(text="Review Amounts...")
+
     def _refresh_run_button_state(self) -> None:
         if self.can_run():
             self._run_button.state(["!disabled"])
@@ -362,20 +752,50 @@ class App:
             self._preview_tree.delete(row)
         if self.last_result is None:
             return
+        self._refresh_review_button_state()
         for doc in self.last_result.documents:
             self._insert_document_rows(doc)
         self._preview_tree.insert(
             "",
             tk.END,
-            values=("GRAND TOTAL", "", "", "", str(self.last_result.grand_total), ""),
+            values=(
+                "GRAND TOTAL",
+                "",
+                "",
+                "",
+                str(self.last_result.effective_grand_total),
+                "",
+                "",
+                "",
+                "",
+            ),
         )
+        # Only worth a line when some of that total actually rests on a
+        # doubtful reading.
+        review_total = self.last_result.review_total
+        if review_total:
+            self._preview_tree.insert(
+                "",
+                tk.END,
+                values=(
+                    "OF WHICH NEEDS REVIEW",
+                    "",
+                    "",
+                    "",
+                    str(review_total),
+                    "",
+                    "",
+                    "",
+                    REVIEW_FLAG,
+                ),
+            )
 
     def _insert_document_rows(self, doc: DocumentResult) -> None:
         if not doc.matches:
             self._preview_tree.insert(
                 "",
                 tk.END,
-                values=(doc.display_name, "", "", "", "", doc.status.value),
+                values=(doc.display_name, "", "", "", "", doc.status.value, "", "", ""),
             )
             return
         for m in doc.matches:
@@ -387,16 +807,30 @@ class App:
                     m.location,
                     m.raw_text,
                     m.rule_id,
-                    str(m.value),
+                    # A human's reading wins over the machine's.
+                    str(m.effective_value),
                     doc.status.value,
+                    m.provenance,
+                    # Blank, not 0: nothing was guessed for a text-layer read.
+                    "" if m.confidence is None else f"{m.confidence:.0f}%",
+                    review_label(m) or "",
                 ),
             )
 
     # ---- Tkinter event handlers ----
 
+    def file_dialog_patterns(self) -> str:
+        """The picker's filter, built from what ingestion actually accepts.
+
+        Drag-and-drop never consulted this, so a hand-maintained list here
+        could quietly disagree with the suffixes the pipeline supports.
+        """
+        suffixes = sorted(SUPPORTED_SUFFIXES) + [ARCHIVE_SUFFIX]
+        return " ".join(f"*{s}" for s in suffixes)
+
     def _on_browse_files(self) -> None:
         paths = filedialog.askopenfilenames(
-            filetypes=[("Supported", "*.docx *.pdf *.zip")]
+            filetypes=[("Supported", self.file_dialog_patterns())]
         )
         self.add_paths([Path(p) for p in paths])
 

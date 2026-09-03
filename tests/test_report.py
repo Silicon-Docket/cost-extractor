@@ -43,7 +43,7 @@ def _sample_result() -> PipelineResult:
 def test_build_workbook_has_details_and_summary_sheets():
     wb = build_workbook(_sample_result())
 
-    assert wb.sheetnames == ["Summary", "Details"]
+    assert wb.sheetnames == ["Summary", "Details", "Revisions"]
 
 
 def test_details_sheet_lists_every_match():
@@ -51,13 +51,31 @@ def test_details_sheet_lists_every_match():
     ws = wb["Details"]
 
     header = [c.value for c in ws[1]]
-    assert header == ["Source File", "Location", "Matched Text", "Rule", "Value"]
+    assert header == [
+        "Source File",
+        "Location",
+        "Matched Text",
+        "Rule",
+        "Value",
+        "Source",
+        "Confidence",
+        "Review",
+        "Read As Text",
+    ]
 
+    # These fixtures come from a text layer, so they carry no score and
+    # nothing is flagged.
     row2 = [c.value for c in ws[2]]
-    assert row2 == ["invoice.docx", "paragraph 1", "$1,234.56", "standard", 1234.56]
+    assert row2 == [
+        "invoice.docx", "paragraph 1", "$1,234.56", "standard", 1234.56,
+        "text", None, None, None,
+    ]
 
     row3 = [c.value for c in ws[3]]
-    assert row3 == ["invoice.docx", "table 1, row 1, col 2", "($500)", "paren_negative", -500]
+    assert row3 == [
+        "invoice.docx", "table 1, row 1, col 2", "($500)", "paren_negative", -500,
+        "text", None, None, None,
+    ]
 
 
 def test_summary_sheet_lists_per_document_totals_and_grand_total():
@@ -65,13 +83,17 @@ def test_summary_sheet_lists_per_document_totals_and_grand_total():
     ws = wb["Summary"]
 
     header = [c.value for c in ws[1]]
-    assert header == ["Document", "Status", "Amounts Found", "Subtotal", "Message"]
+    assert header == [
+        "Document", "Status", "Amounts Found", "Subtotal", "Message", "Review",
+    ]
 
     doc_a_row = [c.value for c in ws[2]]
-    assert doc_a_row == ["invoice.docx", "OK", 2, 734.56, None]
+    assert doc_a_row == ["invoice.docx", "OK", 2, 734.56, None, None]
 
     doc_b_row = [c.value for c in ws[3]]
-    assert doc_b_row == ["broken.pdf", "ERROR", 0, 0, "corrupt or unreadable PDF"]
+    assert doc_b_row == [
+        "broken.pdf", "ERROR", 0, 0, "corrupt or unreadable PDF", None,
+    ]
 
     grand_total_row = [c.value for c in ws[4]]
     assert grand_total_row[0] == "Grand Total"
