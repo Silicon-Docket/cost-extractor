@@ -126,7 +126,7 @@ def test_an_unparseable_correction_is_rejected_without_changing_anything(app):
     error = app.apply_correction(m, "nine hundred")
 
     assert error
-    assert m.corrected_value is None
+    assert m.value_revisions == []
     assert m.effective_value == Decimal("440.00")
 
 
@@ -135,7 +135,7 @@ def test_an_empty_correction_is_rejected(app):
     _load(app, [m])
 
     assert app.apply_correction(m, "   ")
-    assert m.corrected_value is None
+    assert m.value_revisions == []
 
 
 def test_accepting_a_reading_marks_it_reviewed_without_changing_the_value(app):
@@ -144,9 +144,9 @@ def test_accepting_a_reading_marks_it_reviewed_without_changing_the_value(app):
 
     app.accept_reading(m)
 
-    assert m.reviewed is True
+    assert m.value_reviewed is True
     assert m.effective_value == Decimal("340.00")
-    assert m.needs_review is False
+    assert m.value_needs_review is False
 
 
 def test_a_reviewed_amount_drops_out_of_the_queue(app):
@@ -311,7 +311,7 @@ def test_the_second_opinion_never_becomes_a_value_by_itself(app, monkeypatch):
 
     app.open_review_window()
 
-    assert m.corrected_value is None
+    assert m.value_revisions == []
     assert m.effective_value == Decimal("440.00")
 
 
@@ -324,7 +324,7 @@ def test_taking_the_second_opinion_records_it_as_a_human_decision(app, monkeypat
     assert app.use_second_opinion(m) is None
 
     assert m.effective_value == Decimal("940.00")
-    assert m.reviewed is True
+    assert m.value_reviewed is True
 
 
 def test_an_unparseable_second_opinion_cannot_be_taken(app, monkeypatch):
@@ -334,7 +334,7 @@ def test_an_unparseable_second_opinion_cannot_be_taken(app, monkeypatch):
     _load(app, [m])
 
     assert app.use_second_opinion(m)
-    assert m.corrected_value is None
+    assert m.value_revisions == []
 
 
 def test_a_crash_in_the_model_does_not_take_out_the_review_pane(app, monkeypatch):
@@ -407,3 +407,79 @@ def test_use_second_opinion_with_an_explicit_note_uses_it_instead(app, monkeypat
     app.use_second_opinion(m, note="cross-checked with the vendor")
 
     assert m.value_revisions[-1].note == "cross-checked with the vendor"
+
+
+def test_caption_shows_not_yet_reviewed_before_any_revision(app):
+    m = _match("440.00", confidence=84.0)
+    _load(app, [m])
+    app.open_review_window()
+
+    assert "not yet reviewed" in app._review_caption.cget("text")
+
+
+def test_caption_shows_reviewed_once_after_a_single_revision(app):
+    m = _match("440.00", confidence=84.0)
+    _load(app, [m])
+    app.open_review_window()
+
+    app.apply_correction(m, "940.00")
+
+    text = app._review_caption.cget("text")
+    assert "reviewed once" in text
+    assert "940.00" in text
+
+
+def test_caption_shows_a_revision_count_after_more_than_one(app):
+    m = _match("440.00", confidence=84.0)
+    _load(app, [m])
+    app.open_review_window()
+
+    app.apply_correction(m, "900.00")
+    app.apply_correction(m, "940.00")
+
+    assert "reviewed 2x" in app._review_caption.cget("text")
+
+
+def test_caption_includes_the_note_when_the_note_field_has_one(app):
+    m = _match("440.00", confidence=84.0)
+    _load(app, [m])
+    app.open_review_window()
+
+    app._review_note_entry.insert(0, "fixed typo")
+    app._on_save_correction()
+
+    assert "(fixed typo)" in app._review_caption.cget("text")
+
+
+def test_caption_omits_the_note_parenthetical_when_none_was_given(app):
+    m = _match("440.00", confidence=84.0)
+    _load(app, [m])
+    app.open_review_window()
+
+    app.apply_correction(m, "940.00")
+
+    text = app._review_caption.cget("text")
+    assert "()" not in text
+    assert "(None)" not in text
+
+
+def test_the_note_field_clears_between_matches(app):
+    a = _match("440.00", confidence=84.0)
+    b = _match("40.00", confidence=31.0)
+    _load(app, [a, b])
+    app.open_review_window()
+
+    app._review_note_entry.insert(0, "note for a")
+    app.next_review()
+
+    assert app._review_note_entry.get() == ""
+
+
+def test_a_blank_note_field_is_recorded_as_none(app):
+    m = _match("440.00", confidence=84.0)
+    _load(app, [m])
+    app.open_review_window()
+
+    app.apply_correction(m, "940.00")  # note field left blank in the widget flow
+
+    assert m.value_revisions[-1].note is None

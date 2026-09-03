@@ -28,7 +28,7 @@ except Exception:  # noqa: BLE001 - Pillow's Tk bridge needs a Tk-enabled build
     ImageTk = None
 
 from cost_extractor import handwriting
-from cost_extractor.revisions import record_revision
+from cost_extractor.revisions import format_revision_timestamp, record_revision
 from cost_extractor.money_parser import (
     CUSTOM_PATTERN_EXAMPLE_LABEL,
     CUSTOM_PATTERN_EXAMPLE_PATTERN,
@@ -502,6 +502,12 @@ class App:
             side="left", padx=4
         )
 
+        note_row = ttk.Frame(window)
+        note_row.pack(fill="x", padx=10)
+        ttk.Label(note_row, text="Note (optional):").pack(side="left")
+        self._review_note_entry = ttk.Entry(note_row, width=40)
+        self._review_note_entry.pack(side="left", padx=6, fill="x", expand=True)
+
         self._review_error = ttk.Label(window, foreground="red")
         self._review_error.pack(anchor="w", padx=10)
 
@@ -516,11 +522,16 @@ class App:
         self._refresh_review_widgets()
         return window
 
+    def _read_note_entry(self) -> Optional[str]:
+        return self._review_note_entry.get().strip() or None
+
     def _on_save_correction(self) -> None:
         match = self.current_review_match()
         if match is None:
             return
-        error = self.apply_correction(match, self._review_entry.get())
+        error = self.apply_correction(
+            match, self._review_entry.get(), note=self._read_note_entry()
+        )
         self._review_error.config(text=error or "")
         if error is None:
             self.next_review()
@@ -529,9 +540,32 @@ class App:
         match = self.current_review_match()
         if match is None:
             return
-        self.accept_reading(match)
+        self.accept_reading(match, note=self._read_note_entry())
         self._review_error.config(text="")
         self.next_review()
+
+    def _revision_summary(self, match: MatchRecord) -> str:
+        """The parenthetical after "read as $X" -- confidence, plus once
+        reviewed, what changed and when. A bare Decimal is shown without a
+        $ prefix, matching how effective_value is shown everywhere else in
+        this app (the review entry field, the preview table)."""
+        confidence = "unknown" if match.confidence is None else f"{match.confidence:.0f}%"
+        count = len(match.value_revisions)
+        if count == 0:
+            return f"(confidence {confidence}, not yet reviewed)"
+
+        latest = match.value_revisions[-1]
+        when = format_revision_timestamp(latest.at)
+        note_suffix = f" ({latest.note})" if latest.note else ""
+        if count == 1:
+            return (
+                f"(confidence {confidence}) — reviewed once: "
+                f"{latest.value} at {when}{note_suffix}"
+            )
+        return (
+            f"(confidence {confidence}) — reviewed {count}x, latest: "
+            f"{latest.value} at {when}{note_suffix}"
+        )
 
     def _refresh_review_widgets(self) -> None:
         window = self._review_window
@@ -547,16 +581,15 @@ class App:
 
         self._show_crop(match)
 
-        confidence = "unknown" if match.confidence is None else f"{match.confidence:.0f}%"
-        status = "reviewed" if match.reviewed else "not yet reviewed"
         self._review_caption.config(
             text=(
                 f"{match.display_name} — {match.location}\n"
-                f"read as {match.raw_text}  (confidence {confidence}, {status})"
+                f"read as {match.raw_text}  {self._revision_summary(match)}"
             )
         )
         self._review_entry.delete(0, tk.END)
         self._review_entry.insert(0, str(match.effective_value))
+        self._review_note_entry.delete(0, tk.END)
         self._review_position.config(
             text=f"{self.review_index + 1} of {len(queue)}"
         )
@@ -583,7 +616,7 @@ class App:
         match = self.current_review_match()
         if match is None:
             return
-        error = self.use_second_opinion(match)
+        error = self.use_second_opinion(match, note=self._read_note_entry())
         self._review_error.config(text=error or "")
         if error is None:
             self.next_review()
