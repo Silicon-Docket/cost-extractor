@@ -351,3 +351,59 @@ def test_a_crash_in_the_model_does_not_take_out_the_review_pane(app, monkeypatch
     assert app.second_opinion(m) is None
     window = app.open_review_window()
     assert window.winfo_exists()
+
+
+def test_apply_correction_with_no_note_stores_none(app):
+    m = _match("440.00", confidence=84.0)
+    _load(app, [m])
+
+    app.apply_correction(m, "940.00")
+
+    assert m.value_revisions[-1].note is None
+
+
+def test_apply_correction_with_a_note_stores_it(app):
+    m = _match("440.00", confidence=84.0)
+    _load(app, [m])
+
+    app.apply_correction(m, "940.00", note="fixed typo")
+
+    assert m.value_revisions[-1].note == "fixed typo"
+
+
+def test_accept_reading_with_no_note_defaults_to_confirmed(app):
+    m = _match("340.00", confidence=84.0)
+    _load(app, [m])
+
+    app.accept_reading(m)
+
+    assert m.value_revisions[-1].note == "confirmed"
+
+
+def test_accept_reading_with_an_explicit_note_uses_it_instead(app):
+    m = _match("340.00", confidence=84.0)
+    _load(app, [m])
+
+    app.accept_reading(m, note="double-checked against the invoice")
+
+    assert m.value_revisions[-1].note == "double-checked against the invoice"
+
+
+def test_use_second_opinion_with_no_note_names_the_model_as_the_source(app, monkeypatch):
+    _fake_backend(monkeypatch, "$940.00")
+    m = _match("440.00", confidence=82.0)
+    _load(app, [m])
+
+    app.use_second_opinion(m)
+
+    assert m.value_revisions[-1].note == "adopted handwriting model's second opinion"
+
+
+def test_use_second_opinion_with_an_explicit_note_uses_it_instead(app, monkeypatch):
+    _fake_backend(monkeypatch, "$940.00")
+    m = _match("440.00", confidence=82.0)
+    _load(app, [m])
+
+    app.use_second_opinion(m, note="cross-checked with the vendor")
+
+    assert m.value_revisions[-1].note == "cross-checked with the vendor"

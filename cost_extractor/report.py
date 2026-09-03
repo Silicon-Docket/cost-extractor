@@ -43,8 +43,8 @@ def review_label(match) -> Optional[str]:
     None means "nothing worth saying"; a caller rendering into a table cell
     turns that into a blank.
     """
-    if match.reviewed:
-        return "corrected" if match.corrected_value != match.value else "checked"
+    if match.value_reviewed:
+        return "corrected" if match.effective_value != match.value else "checked"
     return REVIEW_FLAG if match.needs_review else None
 
 

@@ -28,6 +28,7 @@ except Exception:  # noqa: BLE001 - Pillow's Tk bridge needs a Tk-enabled build
     ImageTk = None
 
 from cost_extractor import handwriting
+from cost_extractor.revisions import record_revision
 from cost_extractor.money_parser import (
     CUSTOM_PATTERN_EXAMPLE_LABEL,
     CUSTOM_PATTERN_EXAMPLE_PATTERN,
@@ -149,7 +150,7 @@ class App:
             m
             for doc in self.last_result.documents
             for m in doc.matches
-            if m.provenance == "ocr" and not (pending_only and m.reviewed)
+            if m.provenance == "ocr" and not (pending_only and m.value_reviewed)
         ]
         return sorted(
             matches, key=lambda m: m.confidence if m.confidence is not None else 0.0
@@ -158,18 +159,31 @@ class App:
     def can_review(self) -> bool:
         return bool(self.reviewable_matches())
 
-    def apply_correction(self, match: MatchRecord, text: str) -> Optional[str]:
-        """Records a human's reading. Returns an error message, or None."""
+    def apply_correction(
+        self, match: MatchRecord, text: str, note: Optional[str] = None
+    ) -> Optional[str]:
+        """Records a human's reading. Returns an error message, or None.
+
+        No default note: the Revised-From/To pair in the export already
+        shows a change happened, so free text remains the richer channel
+        for *why* rather than an auto-label.
+        """
         value = parse_amount(text)
         if value is None:
             return "Enter an amount, e.g. 940.00 or ($200.00)"
-        match.corrected_value = value
+        record_revision(match.value_revisions, value, note=note)
         self._after_review_change()
         return None
 
-    def accept_reading(self, match: MatchRecord) -> None:
-        """Confirms OCR got it right. Still a decision, so still recorded."""
-        match.corrected_value = match.value
+    def accept_reading(self, match: MatchRecord, note: Optional[str] = None) -> None:
+        """Confirms OCR got it right. Still a decision, so still recorded.
+
+        Defaults the note to "confirmed" when left blank: this is the one
+        case where the value doesn't change, so the note is the only
+        signal that a human deliberately reviewed it rather than it
+        happening to match by coincidence.
+        """
+        record_revision(match.value_revisions, match.value, note=note or "confirmed")
         self._after_review_change()
 
     def second_opinion(self, match: MatchRecord) -> Optional[str]:
@@ -200,17 +214,24 @@ class App:
         """
         return handwriting.disagrees(match.raw_text, self.second_opinion(match))
 
-    def use_second_opinion(self, match: MatchRecord) -> Optional[str]:
+    def use_second_opinion(
+        self, match: MatchRecord, note: Optional[str] = None
+    ) -> Optional[str]:
         """Adopts the model's reading, as a human decision.
 
         Routed through the same parsing and recording as a typed
         correction, so a suggestion can never slip into the totals without
-        someone choosing it.
+        someone choosing it. Defaults the note to name the model as the
+        source when left blank: "typed by the human" vs. "the human
+        accepted the model's suggestion" is a real provenance distinction
+        neither the value nor the Revised-From/To pair shows on its own.
         """
         reading = self.second_opinion(match)
         if not reading:
             return "No second reading available for this amount."
-        return self.apply_correction(match, reading)
+        return self.apply_correction(
+            match, reading, note=note or "adopted handwriting model's second opinion"
+        )
 
     def current_review_match(self) -> Optional[MatchRecord]:
         queue = self.reviewable_matches()
