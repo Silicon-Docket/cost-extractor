@@ -42,10 +42,17 @@ def review_label(match) -> Optional[str]:
     about whether something counts as checked, corrected, or doubtful.
     None means "nothing worth saying"; a caller rendering into a table cell
     turns that into a blank.
+
+    This is a *current-state* label: a match corrected twice that ends
+    back at its original value reads "checked", same as one nobody ever
+    touched a second time. That's intentional — this answers "does the
+    number differ from the machine reading right now"; the Revisions
+    sheet answers "what happened, in order", which is a different
+    question.
     """
     if match.value_reviewed:
         return "corrected" if match.effective_value != match.value else "checked"
-    return REVIEW_FLAG if match.needs_review else None
+    return REVIEW_FLAG if match.value_needs_review else None
 
 
 def _as_number(value) -> float:
@@ -112,7 +119,7 @@ def build_workbook(result: PipelineResult) -> Workbook:
                     m.provenance,
                     m.confidence,
                     review_label(m),
-                    m.raw_text if m.reviewed else None,
+                    m.raw_text if m.value_reviewed else None,
                 ]
             )
 
