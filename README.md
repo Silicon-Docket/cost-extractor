@@ -52,12 +52,27 @@ its score:
 - Typing a different figure and clicking **Save correction** replaces it.
   `940.00`, `$1,240.50` and `($200.00)` are all understood, the same way
   they would be inside a document.
+- **Note (optional)** records why, in your own words — `fixed typo`, say.
+  Left blank, confirming an amount is noted as `confirmed` and taking the
+  handwriting model's reading is noted as coming from the model; a note you
+  type yourself is added to that, never in place of it.
 
 Corrections flow into the preview total and the exported report. The
 original reading is kept in the report's **Read As Text** column, so a
 correction reads as a correction rather than a silent rewrite, and the
 Summary counts **Guessed amounts not yet checked** so you can see how much
 of the total nobody has verified.
+
+Nothing is overwritten: correcting the same amount twice keeps both
+corrections. The report's **Revisions** sheet has one row per correction
+event — *Source File, Location, Matched Text, Rule, Revised From, Revised
+To, Timestamp, Note* — so the Details sheet says what an amount is worth
+now and the Revisions sheet says how it got there. **Revised From** is the
+value immediately before *that* row's correction: the original reading on a
+match's first row, the previous row's **Revised To** on every row after. An
+amount corrected from `$440` to `$900`, then from `$900` to `$940`, is two
+rows — `440.00 → 900.00` and `900.00 → 940.00` — not two rows both starting
+from `440.00`.
 
 Every OCR-derived amount is offered for review, not just low-scoring ones —
 for the reason above. The most doubtful are queued first.

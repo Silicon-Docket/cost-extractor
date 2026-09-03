@@ -1,4 +1,4 @@
-"""Builds the .xlsx report (Summary + Details sheets) from a PipelineResult."""
+"""Builds the .xlsx report (Summary, Details, and Revisions sheets) from a PipelineResult."""
 
 from __future__ import annotations
 
