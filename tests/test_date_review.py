@@ -163,3 +163,85 @@ def test_confirm_no_date_default_note(app):
     app.confirm_no_date(m)
 
     assert m.spend_date_revisions[-1].note == "confirmed no associated date"
+
+
+def test_add_date_rule_success_adds_rule(app):
+    error = app.add_date_rule(r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})", "ISO")
+
+    assert error is None
+    assert any(r.label == "ISO" and not r.built_in for r in app.date_rules)
+
+
+def test_add_date_rule_invalid_pattern_returns_error_and_does_not_add(app):
+    before = len(app.date_rules)
+
+    error = app.add_date_rule(r"(?P<year>\d{4}", "Broken")
+
+    assert error is not None
+    assert len(app.date_rules) == before
+
+
+def test_remove_date_rule_removes_a_custom_rule(app):
+    app.add_date_rule(r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})", "ISO")
+    custom_id = next(r.id for r in app.date_rules if not r.built_in)
+
+    app.remove_date_rule(custom_id)
+
+    assert all(r.built_in for r in app.date_rules)
+
+
+def test_remove_date_rule_refuses_to_remove_a_built_in_rule(app):
+    built_in_id = next(r.id for r in app.date_rules if r.built_in)
+    before = len(app.date_rules)
+
+    app.remove_date_rule(built_in_id)
+
+    assert len(app.date_rules) == before
+
+
+def test_toggle_date_rule_disables_it(app):
+    rule_id = app.date_rules[0].id
+
+    app.toggle_date_rule(rule_id, False)
+
+    assert app.date_rules[0].enabled is False
+
+
+def test_adding_a_date_rule_invalidates_the_suggestion_cache(app):
+    full_text = "Reference 2026-06-14, amount $100.00."
+    m = _match(doc_offset=full_text.index("$100.00"))
+    _load(app, [m], full_text=full_text)
+
+    # Seed the cache BEFORE the matching rule exists, and assert it
+    # seeded None -- otherwise a passing test below wouldn't prove the
+    # cache was actually cleared rather than never populated.
+    assert app.suggest_spend_date(m) is None
+
+    app.add_date_rule(r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})", "ISO")
+
+    assert app.suggest_spend_date(m) == date(2026, 6, 14)
+
+
+def test_removing_a_date_rule_invalidates_the_suggestion_cache(app):
+    app.add_date_rule(r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})", "ISO")
+    custom_id = next(r.id for r in app.date_rules if not r.built_in)
+    full_text = "Reference 2026-06-14, amount $100.00."
+    m = _match(doc_offset=full_text.index("$100.00"))
+    _load(app, [m], full_text=full_text)
+    assert app.suggest_spend_date(m) == date(2026, 6, 14)
+
+    app.remove_date_rule(custom_id)
+
+    assert app.suggest_spend_date(m) is None
+
+
+def test_toggling_a_date_rule_off_invalidates_the_suggestion_cache(app):
+    full_text = "Dated 06/14/2026, amount $100.00."
+    m = _match(doc_offset=full_text.index("$100.00"))
+    _load(app, [m], full_text=full_text)
+    assert app.suggest_spend_date(m) == date(2026, 6, 14)
+    builtin_id = app.date_rules[0].id
+
+    app.toggle_date_rule(builtin_id, False)
+
+    assert app.suggest_spend_date(m) is None

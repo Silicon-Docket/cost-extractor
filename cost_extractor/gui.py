@@ -321,6 +321,44 @@ class App:
         if window is None or not window.winfo_exists():
             return
 
+    def add_date_rule(self, pattern_str: str, label: Optional[str] = None) -> Optional[str]:
+        """Validates and adds a custom date rule. Returns an error
+        message on failure (never raises), or None on success."""
+        try:
+            rule = date_rules.build_custom_rule(
+                pattern_str, label or None, self._custom_date_rule_count
+            )
+        except ValueError as e:
+            return str(e)
+        self._custom_date_rule_count += 1
+        self.date_rules.append(rule)
+        self._date_suggestions.clear()
+        self._refresh_date_rule_checkboxes()
+        return None
+
+    def remove_date_rule(self, rule_id: str) -> None:
+        rule = next((r for r in self.date_rules if r.id == rule_id), None)
+        if rule is None or rule.built_in:
+            return  # built-ins are disableable but not deletable
+        self.date_rules = [r for r in self.date_rules if r.id != rule_id]
+        self._date_suggestions.clear()
+        self._refresh_date_rule_checkboxes()
+
+    def toggle_date_rule(self, rule_id: str, enabled: bool) -> None:
+        for r in self.date_rules:
+            if r.id == rule_id:
+                r.enabled = enabled
+        self._date_suggestions.clear()
+        self._refresh_date_rule_checkboxes()
+
+    def _refresh_date_rule_checkboxes(self) -> None:
+        # Guarded like _refresh_review_button_state: safe to call before
+        # the "Date Formats" panel (Task 5) has built its container.
+        # Task 5 extends this method's body once the widget exists; it
+        # does not replace this guard.
+        if not hasattr(self, "_date_rules_container"):
+            return
+
     def current_review_match(self) -> Optional[MatchRecord]:
         queue = self.reviewable_matches()
         if not queue:
