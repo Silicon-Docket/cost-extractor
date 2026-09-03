@@ -61,20 +61,24 @@ def test_details_sheet_lists_every_match():
         "Confidence",
         "Review",
         "Read As Text",
+        "Spend Date",
+        "Spend Date Review",
     ]
 
     # These fixtures come from a text layer, so they carry no score and
-    # nothing is flagged.
+    # nothing is flagged. Neither match has a spend date confirmed, and
+    # _sample_result()'s documents carry no full_text, so nothing can be
+    # suggested either -- both read "Undated"/REVIEW.
     row2 = [c.value for c in ws[2]]
     assert row2 == [
         "invoice.docx", "paragraph 1", "$1,234.56", "standard", 1234.56,
-        "text", None, None, None,
+        "text", None, None, None, "Undated", "REVIEW",
     ]
 
     row3 = [c.value for c in ws[3]]
     assert row3 == [
         "invoice.docx", "table 1, row 1, col 2", "($500)", "paren_negative", -500,
-        "text", None, None, None,
+        "text", None, None, None, "Undated", "REVIEW",
     ]
 
 

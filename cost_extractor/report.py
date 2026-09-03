@@ -9,6 +9,7 @@ from openpyxl import Workbook
 
 from cost_extractor.pipeline import PipelineResult
 from cost_extractor.revisions import format_revision_timestamp
+from cost_extractor import date_rules
 
 _SUMMARY_HEADER = [
     "Document",
@@ -30,6 +31,8 @@ _DETAILS_HEADER = [
     # What OCR originally produced, kept beside the corrected value so a
     # correction reads as a correction rather than a silent rewrite.
     "Read As Text",
+    "Spend Date",
+    "Spend Date Review",
 ]
 
 # Written where a value would otherwise be silently trustworthy-looking.
@@ -54,6 +57,23 @@ def review_label(match) -> Optional[str]:
     if match.value_reviewed:
         return "corrected" if match.effective_value != match.value else "checked"
     return REVIEW_FLAG if match.value_needs_review else None
+
+
+def spend_date_label(match, doc: "DocumentResult", rules: list["DateRule"]) -> str:
+    if match.spend_date_reviewed:
+        # A human can confirm "no date applies" -- that's a completed
+        # review, not a missing one, so it gets its own label rather
+        # than crashing on effective_spend_date.isoformat() (None has no
+        # such method) or reading the same as "nobody has looked yet."
+        if match.effective_spend_date is None:
+            return "No Date (confirmed)"
+        return match.effective_spend_date.isoformat()
+    nearest = date_rules.nearest_date(
+        date_rules.find_dates(doc.full_text, rules), match.doc_offset
+    )
+    if nearest is None or nearest.value is None:
+        return "Undated"
+    return f"{nearest.value.isoformat()} (suggested, unconfirmed)"
 
 
 def _as_number(value) -> float:
@@ -102,7 +122,10 @@ def _revision_rows(match) -> list[list]:
     return rows
 
 
-def build_workbook(result: PipelineResult) -> Workbook:
+def build_workbook(
+    result: PipelineResult, date_rules: Optional[list["DateRule"]] = None
+) -> Workbook:
+    active_date_rules = date_rules or []
     wb = Workbook()
     summary_ws = wb.active
     summary_ws.title = "Summary"
@@ -144,6 +167,15 @@ def build_workbook(result: PipelineResult) -> Workbook:
             None,
         ]
     )
+    summary_ws.append(
+        [
+            "Dates Not Yet Reviewed",
+            None,
+            None,
+            result.unreviewed_date_count,
+            None,
+        ]
+    )
 
     details_ws = wb.create_sheet("Details")
     details_ws.append(_DETAILS_HEADER)
@@ -160,6 +192,8 @@ def build_workbook(result: PipelineResult) -> Workbook:
                     m.confidence,
                     review_label(m),
                     m.raw_text if m.value_reviewed else None,
+                    spend_date_label(m, doc, active_date_rules),
+                    REVIEW_FLAG if not m.spend_date_reviewed else None,
                 ]
             )
 
