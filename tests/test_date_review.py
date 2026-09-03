@@ -245,3 +245,97 @@ def test_toggling_a_date_rule_off_invalidates_the_suggestion_cache(app):
     app.toggle_date_rule(builtin_id, False)
 
     assert app.suggest_spend_date(m) is None
+
+
+def test_the_spend_date_window_opens_and_shows_the_first_match(app):
+    _load(app, [_match(raw_text="$100.00")])
+
+    window = app.open_spend_date_window()
+
+    assert window.winfo_exists()
+    assert app.current_spend_date_match().raw_text == "$100.00"
+
+
+def test_opening_the_spend_date_window_twice_reuses_the_same_window(app):
+    _load(app, [_match()])
+
+    first = app.open_spend_date_window()
+    second = app.open_spend_date_window()
+
+    assert first is second
+
+
+def test_the_spend_date_queue_includes_every_match_not_just_ocr(app):
+    a = _match(raw_text="$100.00")
+    b = _match(raw_text="$200.00")
+    _load(app, [a, b])
+
+    assert len(app.spend_date_queue()) == 2
+
+
+def test_moving_through_the_spend_date_queue_changes_the_shown_match(app):
+    _load(app, [_match(raw_text="$100.00"), _match(raw_text="$200.00")])
+    app.open_spend_date_window()
+
+    first = app.current_spend_date_match()
+    app.next_spend_date_review()
+
+    assert app.current_spend_date_match() is not first
+
+
+def test_the_spend_date_queue_does_not_run_off_the_end(app):
+    _load(app, [_match()])
+    app.open_spend_date_window()
+
+    app.next_spend_date_review()
+    app.next_spend_date_review()
+
+    assert app.current_spend_date_match() is not None
+
+
+def test_saving_a_spend_date_through_the_window_advances_the_queue(app):
+    _load(app, [_match(raw_text="$100.00"), _match(raw_text="$200.00")])
+    app.open_spend_date_window()
+    first = app.current_spend_date_match()
+
+    app._spend_date_entry.insert(0, "06/14/2026")
+    app._on_save_spend_date()
+
+    assert first.effective_spend_date == date(2026, 6, 14)
+    assert app.current_spend_date_match() is not first
+
+
+def test_confirm_no_date_through_the_window_advances_the_queue(app):
+    _load(app, [_match(raw_text="$100.00"), _match(raw_text="$200.00")])
+    app.open_spend_date_window()
+    first = app.current_spend_date_match()
+
+    app._on_confirm_no_date()
+
+    assert first.spend_date_reviewed is True
+    assert first.effective_spend_date is None
+    assert app.current_spend_date_match() is not first
+
+
+def test_the_spend_date_button_is_off_until_a_result_is_loaded(app):
+    assert "disabled" in app._spend_date_button.state()
+
+    _load(app, [_match()])
+    app._refresh_preview_widget()
+
+    assert "disabled" not in app._spend_date_button.state()
+
+
+def test_the_date_rules_panel_lists_the_built_in_rule(app):
+    assert len(app._date_rules_container.winfo_children()) == 1  # numeric_date
+
+
+def test_adding_a_date_rule_through_the_panel_extends_the_checkbox_list(app):
+    app._date_pattern_entry.insert(
+        0, r"(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})"
+    )
+    app._date_label_entry.insert(0, "ISO")
+
+    app._on_add_date_rule()
+
+    assert len(app._date_rules_container.winfo_children()) == 2
