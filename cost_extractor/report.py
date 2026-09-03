@@ -8,6 +8,7 @@ from typing import Optional
 from openpyxl import Workbook
 
 from cost_extractor.pipeline import PipelineResult
+from cost_extractor.revisions import format_revision_timestamp
 
 _SUMMARY_HEADER = [
     "Document",
@@ -60,6 +61,45 @@ def _as_number(value) -> float:
     # reload via openpyxl (which does not evaluate formulas) sees the
     # real computed value.
     return float(value)
+
+
+_REVISIONS_HEADER = [
+    "Source File",
+    "Location",
+    "Matched Text",
+    "Rule",
+    "Revised From",
+    "Revised To",
+    "Timestamp",
+    "Note",
+]
+
+
+def _revision_rows(match) -> list[list]:
+    """One row per revision event for one match, in order.
+
+    "Revised From" is the value immediately before that revision: the
+    match's original reading for the first revision, the previous
+    revision's value for every one after — so reading down a match's
+    rows reconstructs the full chain.
+    """
+    rows = []
+    previous = match.value
+    for revision in match.value_revisions:
+        rows.append(
+            [
+                match.display_name,
+                match.location,
+                match.raw_text,
+                match.rule_id,
+                _as_number(previous),
+                _as_number(revision.value),
+                format_revision_timestamp(revision.at),
+                revision.note,
+            ]
+        )
+        previous = revision.value
+    return rows
 
 
 def build_workbook(result: PipelineResult) -> Workbook:
@@ -122,6 +162,13 @@ def build_workbook(result: PipelineResult) -> Workbook:
                     m.raw_text if m.value_reviewed else None,
                 ]
             )
+
+    revisions_ws = wb.create_sheet("Revisions")
+    revisions_ws.append(_REVISIONS_HEADER)
+    for doc in result.documents:
+        for m in doc.matches:
+            for row in _revision_rows(m):
+                revisions_ws.append(row)
 
     return wb
 

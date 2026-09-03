@@ -1,12 +1,17 @@
 """The report has to distinguish a read amount from a guessed one."""
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import openpyxl
 
 from cost_extractor.extractors.base import Status
 from cost_extractor.pipeline import DocumentResult, MatchRecord, PipelineResult
-from cost_extractor.report import build_workbook, save_workbook
+from cost_extractor.report import build_workbook, review_label, save_workbook
+from cost_extractor.revisions import record_revision
+
+_FIRST = datetime(2026, 9, 3, 10, 14, tzinfo=timezone.utc)
+_SECOND = datetime(2026, 9, 3, 10, 22, tzinfo=timezone.utc)
 
 
 def _match(value: str, confidence=None) -> MatchRecord:
@@ -105,9 +110,9 @@ def test_summary_flags_a_document_that_needs_review(tmp_path):
 
 def _corrected_result() -> PipelineResult:
     read_wrong = _match("440.00", confidence=84.0)
-    read_wrong.corrected_value = Decimal("940.00")
+    record_revision(read_wrong.value_revisions, Decimal("940.00"))
     checked = _match("200.00", confidence=95.0)
-    checked.corrected_value = Decimal("200.00")
+    record_revision(checked.value_revisions, Decimal("200.00"))
     return PipelineResult.from_documents(
         [
             DocumentResult(
@@ -162,3 +167,99 @@ def test_the_summary_reports_what_is_still_unchecked(tmp_path):
 
     # Two OCR amounts in _result(), neither reviewed.
     assert labels["Guessed amounts not yet checked"] == 2
+
+
+def test_revisions_sheet_header(tmp_path):
+    result = PipelineResult.from_documents([])
+    path = tmp_path / "empty.xlsx"
+    save_workbook(build_workbook(result), path)
+    ws = openpyxl.load_workbook(path)["Revisions"]
+
+    assert [c.value for c in ws[1]] == [
+        "Source File", "Location", "Matched Text", "Rule",
+        "Revised From", "Revised To", "Timestamp", "Note",
+    ]
+
+
+def test_a_second_correction_shows_two_rows_in_the_revisions_sheet(tmp_path):
+    m = _match("440.00", confidence=84.0)
+    record_revision(m.value_revisions, Decimal("900.00"), now=_FIRST)
+    record_revision(m.value_revisions, Decimal("940.00"), note="fixed typo", now=_SECOND)
+    result = PipelineResult.from_documents(
+        [
+            DocumentResult(
+                display_name="scan.pdf", status=Status.OK,
+                matches=[m], subtotal=Decimal("440.00"),
+            )
+        ]
+    )
+    path = tmp_path / "report.xlsx"
+    save_workbook(build_workbook(result), path)
+    ws = openpyxl.load_workbook(path)["Revisions"]
+
+    header = [c.value for c in ws[1]]
+    row1 = [c.value for c in ws[2]]
+    row2 = [c.value for c in ws[3]]
+
+    assert row1[header.index("Revised From")] == 440.0
+    assert row1[header.index("Revised To")] == 900.0
+    assert row1[header.index("Timestamp")] == "2026-09-03 10:14 UTC"
+    assert row1[header.index("Note")] is None
+    assert row2[header.index("Revised From")] == 900.0
+    assert row2[header.index("Revised To")] == 940.0
+    assert row2[header.index("Timestamp")] == "2026-09-03 10:22 UTC"
+    assert row2[header.index("Note")] == "fixed typo"
+
+
+def test_revisions_sheet_disambiguates_matches_sharing_a_location(tmp_path):
+    # location is coarse by construction (a whole page/paragraph/image);
+    # Matched Text + Rule are what tell two matches on the same page apart.
+    a = _match("100.00", confidence=90.0)
+    b = _match("200.00", confidence=90.0)
+    record_revision(a.value_revisions, Decimal("150.00"), now=_FIRST)
+    record_revision(b.value_revisions, Decimal("250.00"), now=_FIRST)
+    result = PipelineResult.from_documents(
+        [
+            DocumentResult(
+                display_name="scan.pdf", status=Status.OK,
+                matches=[a, b], subtotal=Decimal("300.00"),
+            )
+        ]
+    )
+    path = tmp_path / "report.xlsx"
+    save_workbook(build_workbook(result), path)
+    ws = openpyxl.load_workbook(path)["Revisions"]
+
+    header = [c.value for c in ws[1]]
+    matched_text = [
+        row[header.index("Matched Text")]
+        for row in ws.iter_rows(min_row=2, values_only=True)
+    ]
+
+    assert matched_text == ["$100.00", "$200.00"]
+
+
+def test_review_label_reads_checked_when_a_reverted_correction_lands_back_on_the_original():
+    # Intentional current-state semantics: the Revisions sheet has the
+    # full history; this label answers "does it differ right now".
+    m = _match("440.00", confidence=84.0)
+    record_revision(m.value_revisions, Decimal("900.00"), now=_FIRST)
+    record_revision(m.value_revisions, Decimal("440.00"), now=_SECOND)  # reverted
+
+    assert review_label(m) == "checked"
+
+
+def test_a_match_with_no_revisions_has_no_revisions_sheet_rows(tmp_path):
+    result = PipelineResult.from_documents(
+        [
+            DocumentResult(
+                display_name="scan.pdf", status=Status.OK,
+                matches=[_match("100.00")], subtotal=Decimal("100.00"),
+            )
+        ]
+    )
+    path = tmp_path / "report.xlsx"
+    save_workbook(build_workbook(result), path)
+    ws = openpyxl.load_workbook(path)["Revisions"]
+
+    assert ws.max_row == 1  # header only
