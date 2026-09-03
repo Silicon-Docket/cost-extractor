@@ -652,3 +652,20 @@ Lands on `spend-categorization`, branched from `main` after sub-project 1
 merged (PR #1). Own PR against `main` when complete — a different feature
 area from sub-project 1's correction-audit trail, not a continuation of
 that PR.
+
+**Ordering with sub-project 3 (spend over time) is genuinely open** —
+both sub-projects branch independently from `main` and neither depends on
+the other's machinery, only on sub-project 1's already-merged
+`Revision[T]` mechanism. Whichever of the two is implemented and merged
+first is the one that actually introduces the Revisions sheet's
+`Dimension` column (described above as `"Category"`/`"Value"`); the
+second one just adds its own value (`"Spend Date"`) to a column that
+already exists, rather than creating it. If sub-project 3 lands first,
+its own Revisions-sheet work introduces `Dimension` with only
+`"Value"`/`"Spend Date"` as possible values, and this sub-project's
+implementation plan should adjust to add `"Category"` to that existing
+column rather than creating it fresh — the mirror image of what this
+spec currently describes. Whoever writes the second sub-project's
+implementation plan should re-check the actual merged state of
+`report.py` at that time rather than trust either spec's assumed
+ordering.
