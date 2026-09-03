@@ -43,7 +43,7 @@ def _sample_result() -> PipelineResult:
 def test_build_workbook_has_details_and_summary_sheets():
     wb = build_workbook(_sample_result())
 
-    assert wb.sheetnames == ["Summary", "Details"]
+    assert wb.sheetnames == ["Summary", "Details", "Revisions"]
 
 
 def test_details_sheet_lists_every_match():
