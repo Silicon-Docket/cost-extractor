@@ -180,9 +180,11 @@ amount it happens to sit.
   it records that this amount genuinely has no associated spend date, so
   the report can tell "reviewed, doesn't apply" apart from "nobody has
   looked yet."
-- **Note (optional)** works the same way it does in the Review Amounts
-  pane — left blank, the decision is noted as `confirmed`; typed, your
-  note is what's kept.
+- **Note (optional)** records why, in your own words, same as the Review
+  Amounts pane. Left blank: **Use this** notes the decision as `confirmed`,
+  **No date applies** notes it as `confirmed no associated date`, and
+  **Save date** leaves it blank — typing your own note always overrides
+  these defaults.
 
 As with amount corrections, nothing is overwritten: confirming a match's
 date twice keeps both decisions.
