@@ -1469,12 +1469,13 @@ git commit -m "feat: add the Categories panel and Categorize Amounts window"
 
 **Files:**
 - Modify: `cost_extractor/report.py:1-56` (imports, `review_label`), `:21-33` (`_DETAILS_HEADER`), `:105-165` (`build_workbook`)
+- Modify: `cost_extractor/gui.py` (`export_report`'s `build_workbook` call)
 - Modify (mechanical ripple): `tests/test_report.py` (`test_details_sheet_lists_every_match`)
-- Test: `tests/test_report_categorization.py` (new)
+- Test: `tests/test_report_categorization.py` (new), `tests/test_category_review.py` (append)
 
 **Interfaces:**
-- Consumes: `category_rules.suggest_category` (Task 1). `MatchRecord.line_text`, `category_reviewed`, `effective_category`; `PipelineResult.uncategorized_count` (Task 2).
-- Produces: `build_workbook(result, category_rules=None)` (new optional 2nd parameter — every existing 1-argument call site keeps compiling). `category_label(match, rules) -> str`. Used by Task 7 (Revisions/Categories additions to the same function).
+- Consumes: `category_rules.suggest_category` (Task 1). `MatchRecord.line_text`, `category_reviewed`, `effective_category`; `PipelineResult.uncategorized_count` (Task 2). `App.category_rules` (Task 3).
+- Produces: `build_workbook(result, category_rules=None)` (new optional 2nd parameter — every existing 1-argument call site keeps compiling). `category_label(match, rules) -> str`. `export_report` now actually threads the app's live rule set through to the export. Used by Task 7 (Revisions/Categories additions to the same function).
 
 **Design note:** `build_workbook`'s new parameter is deliberately named `category_rules`, matching the module-level `from cost_extractor import category_rules` import — inside `build_workbook`'s own body this parameter shadows the module for the duration of that one function, same as `date_rules` does on the sibling `spend-over-time` branch. This is safe here for the same reason it's safe there: nothing inside `build_workbook`'s own body ever calls `category_rules.<something>()` directly — it only passes the local `active_category_rules` list along to `category_label`, a separate top-level function that sees the un-shadowed module. Unlike the date-suggestion case, `category_label`'s suggestion lookup operates on `match.line_text` (already scoped to one line, captured once at extraction time) rather than re-scanning a whole document per match, so there is no analogous per-document hoisting to add here — do not add one speculatively.
 
@@ -1720,7 +1721,44 @@ In `build_workbook` (`cost_extractor/report.py:138-146`), after the existing `"G
 Run: `.venv/Scripts/python.exe -m pytest tests/test_report_categorization.py -v`
 Expected: PASS (all 4 tests)
 
-- [ ] **Step 7: Fix the mechanical ripple in `tests/test_report.py`**
+- [ ] **Step 7: Wire `gui.py`'s `export_report` to pass the app's live `category_rules` through**
+
+`cost_extractor/gui.py`'s `export_report` currently calls `build_workbook(self.last_result)` with no second argument -- `App.category_rules` (added in Task 3) is never actually threaded through to the export, so a real export would always read every unconfirmed match as "Uncategorized" regardless of what the live rule set would suggest. Change the one `build_workbook(...)` call inside `export_report` (`cost_extractor/gui.py`, inside the existing `try` block) from:
+
+```python
+            wb = build_workbook(self.last_result)
+```
+
+to:
+
+```python
+            wb = build_workbook(self.last_result, self.category_rules)
+```
+
+No other line in `export_report` changes.
+
+Add a covering test to `tests/test_category_review.py` (reusing the existing `app`/`_match`/`_load` fixtures) proving the rule set is actually threaded through -- not just that the export doesn't error:
+
+```python
+def test_export_report_passes_the_live_category_rules_through(app, tmp_path):
+    import openpyxl
+
+    m = _match(line_text="materials delivered today")
+    _load(app, [m])
+
+    path = tmp_path / "report.xlsx"
+    error = app.export_report(path)
+
+    assert error is None
+    ws = openpyxl.load_workbook(path)["Details"]
+    header = [c.value for c in ws[1]]
+    row = [c.value for c in ws[2]]
+    assert row[header.index("Category")] == "Materials (suggested, unconfirmed)"
+```
+
+Run `.venv/Scripts/python.exe -m pytest tests/test_category_review.py -v` and confirm this new test passes alongside the existing 25.
+
+- [ ] **Step 8: Fix the mechanical ripple in `tests/test_report.py`**
 
 `_DETAILS_HEADER` gaining two columns breaks `test_details_sheet_lists_every_match`'s exact-list assertions (it is the one Details test in the whole suite that checks the header and rows by positional equality rather than `header.index(...)` lookup). In `tests/test_report.py`, replace:
 
@@ -1796,15 +1834,15 @@ def test_details_sheet_lists_every_match():
     ]
 ```
 
-- [ ] **Step 8: Run the full existing suite to confirm nothing else broke**
+- [ ] **Step 9: Run the full existing suite to confirm nothing else broke**
 
 Run: `.venv/Scripts/python.exe -m pytest -v`
 Expected: PASS. (`test_report_evidence.py`'s Details tests all use `header.index(...)` lookups, per the file's own established convention, so the two new trailing columns don't disturb them.)
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add cost_extractor/report.py tests/test_report_categorization.py tests/test_report.py
+git add cost_extractor/report.py cost_extractor/gui.py tests/test_report_categorization.py tests/test_report.py tests/test_category_review.py
 git commit -m "feat: export Category/Category Review columns and a Summary row"
 ```
 
