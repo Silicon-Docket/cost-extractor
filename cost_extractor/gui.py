@@ -28,6 +28,7 @@ except Exception:  # noqa: BLE001 - Pillow's Tk bridge needs a Tk-enabled build
     ImageTk = None
 
 from cost_extractor import handwriting
+from cost_extractor import category_rules
 from cost_extractor.revisions import format_revision_timestamp, record_revision
 from cost_extractor.money_parser import (
     CUSTOM_PATTERN_EXAMPLE_LABEL,
@@ -85,6 +86,17 @@ class App:
         self.review_index = 0
         self._review_photo = None
         self._second_opinions: dict[int, Optional[str]] = {}
+        self.category_rules: list[category_rules.CategoryRule] = category_rules.default_rules()
+        # Same id(match)-keyed cache shape as _second_opinions -- must be
+        # invalidated whenever self.category_rules changes (Task 4) AND
+        # on every new pipeline run (Step 5 below) -- a stale entry from
+        # a previous run's freed MatchRecord could otherwise be returned
+        # for an unrelated match in a new run that happens to land at
+        # the same id().
+        self._category_suggestions: dict[int, Optional[str]] = {}
+        self._custom_category_rule_count = 0
+        self._category_window: Optional[tk.Toplevel] = None
+        self.category_review_index = 0
 
         self._build_widgets()
         self._refresh_rule_checkboxes()
@@ -237,6 +249,51 @@ class App:
         combined_note = f"{cleaned} ({provenance})" if cleaned else provenance
         return self.apply_correction(match, reading, note=combined_note)
 
+    def suggest_category(self, match: MatchRecord) -> Optional[str]:
+        """The best category for this match's own line, computed on
+        demand and cached per match. Recomputed only when the cache is
+        explicitly invalidated (rule changes -- Task 4 -- or a new run --
+        Step 5 above), never on a timer or a document reload."""
+        cached = self._category_suggestions.get(id(match), _UNREAD)
+        if cached is not _UNREAD:
+            return cached
+        suggestion = category_rules.suggest_category(match.line_text, self.category_rules)
+        self._category_suggestions[id(match)] = suggestion
+        return suggestion
+
+    def confirm_category(
+        self, match: MatchRecord, category: str, note: Optional[str] = None
+    ) -> Optional[str]:
+        cleaned = category.strip()
+        if not cleaned:
+            return "Enter a category"
+        record_revision(match.category_revisions, cleaned, note=note)
+        self._after_category_change()
+        return None
+
+    def accept_category_suggestion(
+        self, match: MatchRecord, note: Optional[str] = None
+    ) -> Optional[str]:
+        suggestion = self.suggest_category(match)
+        if suggestion is None:
+            return "No category suggestion available for this line."
+        cleaned = (note or "").strip() or None
+        record_revision(match.category_revisions, suggestion, note=cleaned or "confirmed")
+        self._after_category_change()
+        return None
+
+    def _after_category_change(self) -> None:
+        self._refresh_category_widgets()
+
+    def _refresh_category_widgets(self) -> None:
+        # Guards exactly like _refresh_review_widgets: safe to call even
+        # when the "Categorize Amounts..." window (Task 5) isn't open.
+        # Task 5 extends this method's body once the window exists to
+        # refresh; it does not replace this guard.
+        window = self._category_window
+        if window is None or not window.winfo_exists():
+            return
+
     def current_review_match(self) -> Optional[MatchRecord]:
         queue = self.reviewable_matches()
         if not queue:
@@ -294,6 +351,7 @@ class App:
             progress_cb=lambda name: self._progress_queue.put(f"progress:{name}"),
             cancel_flag=self.cancel_flag,
         )
+        self._category_suggestions.clear()
         self.last_result = result
         self._progress_queue.put("done")
 
