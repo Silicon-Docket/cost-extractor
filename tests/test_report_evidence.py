@@ -176,7 +176,7 @@ def test_revisions_sheet_header(tmp_path):
     ws = openpyxl.load_workbook(path)["Revisions"]
 
     assert [c.value for c in ws[1]] == [
-        "Source File", "Location", "Matched Text", "Rule",
+        "Source File", "Location", "Matched Text", "Rule", "Dimension",
         "Revised From", "Revised To", "Timestamp", "Note",
     ]
 

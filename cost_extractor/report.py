@@ -1,7 +1,8 @@
-"""Builds the .xlsx report (Summary, Details, and Revisions sheets) from a PipelineResult."""
+"""Builds the .xlsx report (Summary, Details, Categories, and Revisions sheets) from a PipelineResult."""
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -78,6 +79,7 @@ _REVISIONS_HEADER = [
     "Location",
     "Matched Text",
     "Rule",
+    "Dimension",
     "Revised From",
     "Revised To",
     "Timestamp",
@@ -102,6 +104,7 @@ def _revision_rows(match) -> list[list]:
                 match.location,
                 match.raw_text,
                 match.rule_id,
+                "Value",
                 _as_number(previous),
                 _as_number(revision.value),
                 format_revision_timestamp(revision.at),
@@ -109,6 +112,76 @@ def _revision_rows(match) -> list[list]:
             ]
         )
         previous = revision.value
+    return rows
+
+
+def _category_revision_rows(match) -> list[list]:
+    """One row per category-revision event, same chaining rule as
+    _revision_rows: "Revised From" is the value immediately before that
+    revision -- None ("Uncategorized") for the first one, the previous
+    revision's category for every one after."""
+    rows = []
+    previous = None
+    for revision in match.category_revisions:
+        rows.append(
+            [
+                match.display_name,
+                match.location,
+                match.raw_text,
+                match.rule_id,
+                "Category",
+                previous or "Uncategorized",
+                revision.value or "Uncategorized",
+                format_revision_timestamp(revision.at),
+                revision.note,
+            ]
+        )
+        previous = revision.value
+    return rows
+
+
+_CATEGORIES_HEADER = ["Category", "Status", "Amount", "Match Count"]
+
+
+def _category_summary_rows(
+    result: PipelineResult, rules: list["category_rules.CategoryRule"]
+) -> list[list]:
+    """One row per (category, status) pair. Confirmed rows sum
+    effective_value for matches whose effective_category matches;
+    unconfirmed rows sum matches whose live suggestion matches but
+    aren't confirmed yet; an Uncategorized row covers matches with
+    neither, omitted (not a zero row) when there are none."""
+    confirmed: dict[str, tuple[Decimal, int]] = {}
+    unconfirmed: dict[str, tuple[Decimal, int]] = {}
+    uncategorized_total = Decimal("0")
+    uncategorized_count = 0
+
+    for doc in result.documents:
+        for m in doc.matches:
+            if m.category_reviewed:
+                bucket, key = confirmed, m.effective_category
+            else:
+                suggestion = category_rules.suggest_category(m.line_text, rules)
+                if suggestion is None:
+                    uncategorized_total += m.effective_value
+                    uncategorized_count += 1
+                    continue
+                bucket, key = unconfirmed, suggestion
+            total, count = bucket.get(key, (Decimal("0"), 0))
+            bucket[key] = (total + m.effective_value, count + 1)
+
+    rows = []
+    for category in sorted(set(confirmed) | set(unconfirmed)):
+        if category in confirmed:
+            total, count = confirmed[category]
+            rows.append([category, "Confirmed", _as_number(total), count])
+        if category in unconfirmed:
+            total, count = unconfirmed[category]
+            rows.append([category, "Unconfirmed", _as_number(total), count])
+    if uncategorized_count:
+        rows.append(
+            ["Uncategorized", "(no signal)", _as_number(uncategorized_total), uncategorized_count]
+        )
     return rows
 
 
@@ -187,11 +260,18 @@ def build_workbook(
                 ]
             )
 
+    categories_ws = wb.create_sheet("Categories")
+    categories_ws.append(_CATEGORIES_HEADER)
+    for row in _category_summary_rows(result, active_category_rules):
+        categories_ws.append(row)
+
     revisions_ws = wb.create_sheet("Revisions")
     revisions_ws.append(_REVISIONS_HEADER)
     for doc in result.documents:
         for m in doc.matches:
             for row in _revision_rows(m):
+                revisions_ws.append(row)
+            for row in _category_revision_rows(m):
                 revisions_ws.append(row)
 
     return wb
