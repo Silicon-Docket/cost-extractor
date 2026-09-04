@@ -531,6 +531,51 @@ def test_second_opinions_cache_is_cleared_between_runs(app, monkeypatch):
     assert app.second_opinion(m2) == "$100.00"
 
 
+def test_a_completed_run_does_not_run_the_handwriting_model_on_the_main_thread(
+    app, monkeypatch
+):
+    # Regression: _poll_progress's refresh runs on the Tk event loop with a
+    # just-cleared cache, so computing a second opinion there would be a
+    # guaranteed cold miss and freeze the GUI the moment the run reports
+    # "Done". Counts calls rather than asserting on text, because the
+    # rendered label looks the same whether the reading came from the cache
+    # or from a fresh (blocking) inference.
+    from cost_extractor import gui as gui_module
+
+    calls = []
+
+    def counting_read_line(img):
+        calls.append(1)
+        return "$940.00"
+
+    monkeypatch.setattr(gui_module.handwriting, "is_available", lambda: True)
+    monkeypatch.setattr(gui_module.handwriting, "read_line", counting_read_line)
+
+    m1 = _match("440.00", confidence=82.0)
+    _load(app, [m1])
+    app.open_review_window()
+    calls.clear()  # ignore any inference the window's initial paint did
+
+    m2 = _match("200.00", confidence=80.0)
+    doc2 = DocumentResult(
+        display_name="scan2.pdf", status=Status.OK, matches=[m2], subtotal=Decimal("200.00"),
+    )
+    result2 = PipelineResult.from_documents([doc2])
+    monkeypatch.setattr(gui_module, "run_pipeline", lambda *a, **k: result2)
+
+    app._run_worker([], [])  # ends by enqueuing "done" itself
+    app._poll_progress()  # drives the real "done" branch on this thread
+
+    assert calls == [], "run-completion refresh must not invoke the handwriting model"
+    # And the window really did repoint. Asserted on the visible caption,
+    # not current_review_match(): that is a pure function of last_result and
+    # review_index, both already set before the refresh, so it would pass
+    # even with the refresh call deleted outright.
+    caption = app._review_caption.cget("text")
+    assert "$200.00" in caption
+    assert "$440.00" not in caption
+
+
 def test_a_blank_note_field_is_recorded_as_none(app):
     m = _match("440.00", confidence=84.0)
     _load(app, [m])

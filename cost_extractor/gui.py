@@ -494,7 +494,7 @@ class App:
                     self._set_status("Done")
                     self._refresh_preview_widget()
                     self.review_index = 0
-                    self._refresh_review_widgets()
+                    self._refresh_review_widgets(compute_second_opinion=False)
                     self.category_review_index = 0
                     self._refresh_category_widgets()
                     return
@@ -860,7 +860,7 @@ class App:
             f"{latest.value} at {when}{note_suffix}"
         )
 
-    def _refresh_review_widgets(self) -> None:
+    def _refresh_review_widgets(self, compute_second_opinion: bool = True) -> None:
         window = self._review_window
         if window is None or not window.winfo_exists():
             return
@@ -886,11 +886,25 @@ class App:
         self._review_position.config(
             text=f"{self.review_index + 1} of {len(queue)}"
         )
-        self._refresh_second_opinion_widgets(match)
+        self._refresh_second_opinion_widgets(match, compute=compute_second_opinion)
 
-    def _refresh_second_opinion_widgets(self, match: MatchRecord) -> None:
-        """Shows the handwriting model's reading, when one is installed."""
-        reading = self.second_opinion(match)
+    def _refresh_second_opinion_widgets(
+        self, match: MatchRecord, compute: bool = True
+    ) -> None:
+        """Shows the handwriting model's reading, when one is installed.
+
+        `compute=False` renders only an already-cached reading and never
+        runs the model. The automatic refresh after a run completes happens
+        on the Tk event-loop thread with a just-cleared cache, so computing
+        there would freeze the window at the exact moment it reports
+        "Done" -- the reading fills in when the reviewer navigates to the
+        match instead.
+        """
+        if compute:
+            reading = self.second_opinion(match)
+        else:
+            cached = self._second_opinions.get(id(match), _UNREAD)
+            reading = None if cached is _UNREAD else cached
         if not reading:
             self._second_opinion_label.config(text="")
             self._second_opinion_button.pack_forget()
