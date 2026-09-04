@@ -221,3 +221,83 @@ def test_toggling_a_category_rule_off_invalidates_the_suggestion_cache(app):
     app.toggle_category_rule(materials_id, False)
 
     assert app.suggest_category(m) is None
+
+
+def test_the_category_window_opens_and_shows_the_first_match(app):
+    _load(app, [_match(raw_text="$100.00")])
+
+    window = app.open_category_window()
+
+    assert window.winfo_exists()
+    assert app.current_category_match().raw_text == "$100.00"
+
+
+def test_opening_the_category_window_twice_reuses_the_same_window(app):
+    _load(app, [_match()])
+
+    first = app.open_category_window()
+    second = app.open_category_window()
+
+    assert first is second
+
+
+def test_the_category_queue_includes_every_match_not_just_ocr(app):
+    a = _match(raw_text="$100.00")
+    b = _match(raw_text="$200.00")
+    _load(app, [a, b])
+
+    assert len(app.category_queue()) == 2
+
+
+def test_moving_through_the_category_queue_changes_the_shown_match(app):
+    _load(app, [_match(raw_text="$100.00"), _match(raw_text="$200.00")])
+    app.open_category_window()
+
+    first = app.current_category_match()
+    app.next_category_review()
+
+    assert app.current_category_match() is not first
+
+
+def test_the_category_queue_does_not_run_off_the_end(app):
+    _load(app, [_match()])
+    app.open_category_window()
+
+    app.next_category_review()
+    app.next_category_review()
+
+    assert app.current_category_match() is not None
+
+
+def test_saving_a_category_through_the_window_advances_the_queue(app):
+    _load(app, [_match(raw_text="$100.00"), _match(raw_text="$200.00")])
+    app.open_category_window()
+    first = app.current_category_match()
+
+    app._category_entry.insert(0, "Materials")
+    app._on_save_category()
+
+    assert first.effective_category == "Materials"
+    assert app.current_category_match() is not first
+
+
+def test_the_category_button_is_off_until_a_result_is_loaded(app):
+    assert "disabled" in app._category_button.state()
+
+    _load(app, [_match()])
+    app._refresh_preview_widget()
+
+    assert "disabled" not in app._category_button.state()
+
+
+def test_the_categories_panel_lists_the_built_in_rules(app):
+    assert len(app._category_rules_container.winfo_children()) == 4  # materials/labor/travel/fees
+
+
+def test_adding_a_category_rule_through_the_panel_extends_the_checkbox_list(app):
+    app._category_pattern_entry.insert(0, r"\bpermits?\b")
+    app._category_label_entry.insert(0, "Permits")
+
+    app._on_add_category_rule()
+
+    assert len(app._category_rules_container.winfo_children()) == 5

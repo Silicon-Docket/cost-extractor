@@ -163,6 +163,49 @@ into the same USD-labeled report. That's intentional: custom rules are an
 escape hatch for whatever your documents actually contain, not a currency
 converter.
 
+### Categorizing amounts
+
+Every amount needs a category decision — not just the ones OCR guessed at.
+Click **Categorize Amounts...** after a run to work through them one at a
+time. For each, the app suggests a category by matching the **Categories**
+panel's rules against the line of text the amount was found on, and offers
+two ways to resolve it:
+
+- **Confirm category** records whatever you type in the **Category** field,
+  regardless of any suggestion shown.
+- **Use this** accepts the suggested category as-is, when one exists.
+
+**Note (optional)** works the same way it does in the Review Amounts pane:
+left blank, accepting a suggestion is noted as `confirmed`; typing your own
+note records it instead. Nothing is overwritten — categorizing the same
+amount twice keeps both decisions in its history, the same append-only
+pattern the value review uses.
+
+The four built-in starter categories — Materials, Labor, Travel, Fees — are
+illustrative, not exhaustive. Edit or remove them, and add your own, in the
+**Categories** panel, the same way built-in money formats work in the
+**Money Formats** panel above it.
+
+**Adding a custom category pattern.** Use the **Custom pattern** row in the
+**Categories** panel the same way you would in **Money Formats**: enter a
+regex, optionally a label, and click **Add**. The key difference is that a
+category pattern is presence detection, not value extraction — there's no
+required `(?P<amount>...)` group; any regex that matches somewhere on the
+amount's line counts as a hit. It's also matched against just that one
+line, not the whole page, so a pattern like `\bpermits?\b` only suggests
+**Permits** for amounts on lines that actually mention a permit.
+
+**Categories in the report.** The Details sheet gains **Category** and
+**Category Review** columns: a confirmed category, a
+suggested-but-unconfirmed one shown as `"{label} (suggested, unconfirmed)"`,
+or `"Uncategorized"` when nothing matched and nothing was typed. The
+**Revisions** sheet gains a **Dimension** column so a money-value correction
+and a category decision on the same amount are told apart in the same audit
+trail. A new **Categories** sheet breaks totals down per category, with
+confirmed and unconfirmed amounts kept in separate rows rather than blended
+together. The Summary sheet adds an **Amounts not yet categorized** count,
+alongside the existing review counts.
+
 ## Dev setup
 
 ```

@@ -101,6 +101,8 @@ class App:
         self._build_widgets()
         self._refresh_rule_checkboxes()
         self._refresh_run_button_state()
+        self._refresh_category_rule_checkboxes()
+        self._refresh_category_button_state()
 
     # ---- state mutation: pure-ish logic, testable without a running mainloop ----
 
@@ -286,13 +288,54 @@ class App:
         self._refresh_category_widgets()
 
     def _refresh_category_widgets(self) -> None:
-        # Guards exactly like _refresh_review_widgets: safe to call even
-        # when the "Categorize Amounts..." window (Task 5) isn't open.
-        # Task 5 extends this method's body once the window exists to
-        # refresh; it does not replace this guard.
         window = self._category_window
         if window is None or not window.winfo_exists():
             return
+
+        queue = self.category_queue()
+        match = self.current_category_match()
+        if match is None:
+            self._category_caption.config(text="Nothing left to categorize.")
+            self._category_position.config(text="")
+            return
+
+        self._category_caption.config(
+            text=(
+                f'{match.display_name} — {match.location}\n'
+                f'line: "{match.line_text}"  {self._category_review_summary(match)}'
+            )
+        )
+        self._category_entry.delete(0, tk.END)
+        if match.category_reviewed and match.effective_category is not None:
+            self._category_entry.insert(0, match.effective_category)
+        self._category_note_entry.delete(0, tk.END)
+        self._category_error.config(text="")
+        self._category_position.config(
+            text=f"{self.category_review_index + 1} of {len(queue)}"
+        )
+        self._refresh_category_suggestion_widgets(match)
+
+    def _category_review_summary(self, match: MatchRecord) -> str:
+        count = len(match.category_revisions)
+        if count == 0:
+            return "(not yet reviewed)"
+        latest = match.category_revisions[-1]
+        when = format_revision_timestamp(latest.at)
+        note_suffix = f" ({latest.note})" if latest.note else ""
+        if count == 1:
+            return f"— reviewed once: {latest.value} at {when}{note_suffix}"
+        return f"— reviewed {count}x, latest: {latest.value} at {when}{note_suffix}"
+
+    def _refresh_category_suggestion_widgets(self, match: MatchRecord) -> None:
+        suggestion = self.suggest_category(match)
+        if suggestion is None:
+            self._category_suggestion_label.config(
+                text="No category suggestion for this line."
+            )
+            self._category_suggestion_button.pack_forget()
+            return
+        self._category_suggestion_label.config(text=f"Suggested: {suggestion}")
+        self._category_suggestion_button.pack(side="left", padx=8)
 
     def add_category_rule(self, pattern_str: str, label: str) -> Optional[str]:
         """Validates and adds a custom category rule. Returns an error
@@ -322,12 +365,57 @@ class App:
         self._refresh_category_rule_checkboxes()
 
     def _refresh_category_rule_checkboxes(self) -> None:
-        # Guarded like _refresh_review_button_state: safe to call before
-        # the "Categories" panel (Task 5) has built its container. Task 5
-        # extends this method's body once the widget exists; it does not
-        # replace this guard.
         if not hasattr(self, "_category_rules_container"):
             return
+        for child in self._category_rules_container.winfo_children():
+            child.destroy()
+
+        for rule in self.category_rules:
+            row = ttk.Frame(self._category_rules_container)
+            row.pack(fill="x")
+            var = tk.BooleanVar(value=rule.enabled)
+            cb = ttk.Checkbutton(
+                row,
+                text=rule.label,
+                variable=var,
+                command=lambda r=rule, v=var: self.toggle_category_rule(r.id, v.get()),
+            )
+            cb.pack(side="left")
+            if not rule.built_in:
+                ttk.Button(
+                    row,
+                    text="×",
+                    width=2,
+                    command=lambda rid=rule.id: self.remove_category_rule(rid),
+                ).pack(side="left")
+
+    def category_queue(self) -> list[MatchRecord]:
+        """Every match, not just OCR-derived ones -- a category applies
+        regardless of how the amount was read."""
+        if self.last_result is None:
+            return []
+        return [m for doc in self.last_result.documents for m in doc.matches]
+
+    def can_categorize(self) -> bool:
+        return bool(self.category_queue())
+
+    def current_category_match(self) -> Optional[MatchRecord]:
+        queue = self.category_queue()
+        if not queue:
+            return None
+        return queue[min(self.category_review_index, len(queue) - 1)]
+
+    def next_category_review(self) -> None:
+        queue = self.category_queue()
+        if queue:
+            self.category_review_index = min(
+                self.category_review_index + 1, len(queue) - 1
+            )
+        self._refresh_category_widgets()
+
+    def previous_category_review(self) -> None:
+        self.category_review_index = max(0, self.category_review_index - 1)
+        self._refresh_category_widgets()
 
     def current_review_match(self) -> Optional[MatchRecord]:
         queue = self.reviewable_matches()
@@ -494,6 +582,32 @@ class App:
             lambda e: self._custom_hint_label.config(wraplength=max(e.width - 16, 100)),
         )
 
+        category_rules_frame = ttk.LabelFrame(self.root, text="Categories")
+        category_rules_frame.pack(fill="x", padx=8, pady=4)
+        self._category_rules_container = ttk.Frame(category_rules_frame)
+        self._category_rules_container.pack(fill="x")
+        self._category_rule_error_label = ttk.Label(category_rules_frame, foreground="red", text="")
+        self._category_rule_error_label.pack(fill="x")
+
+        category_custom_frame = ttk.Frame(category_rules_frame)
+        category_custom_frame.pack(fill="x", pady=(4, 0))
+        ttk.Label(category_custom_frame, text="Custom pattern:").pack(side="left")
+        self._category_pattern_entry = ttk.Entry(category_custom_frame)
+        self._category_pattern_entry.pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Label(category_custom_frame, text="Label:").pack(side="left")
+        self._category_label_entry = ttk.Entry(category_custom_frame, width=15)
+        self._category_label_entry.pack(side="left", padx=4)
+        ttk.Button(
+            category_custom_frame, text="Add", command=self._on_add_category_rule
+        ).pack(side="left")
+
+        self._category_hint_label = ttk.Label(
+            category_rules_frame,
+            foreground="gray",
+            text="Regex matched against the line the amount was found on.",
+        )
+        self._category_hint_label.pack(fill="x", pady=(0, 4))
+
         run_frame = ttk.Frame(self.root)
         run_frame.pack(fill="x", padx=8, pady=4)
         self._run_button = ttk.Button(
@@ -508,6 +622,11 @@ class App:
         )
         self._review_button.pack(side="left", padx=4)
         self._review_button.state(["disabled"])
+        self._category_button = ttk.Button(
+            run_frame, text="Categorize Amounts...", command=self.open_category_window
+        )
+        self._category_button.pack(side="left", padx=4)
+        self._category_button.state(["disabled"])
         ttk.Button(
             run_frame, text="Save Report...", command=self._on_export
         ).pack(side="left", padx=4)
@@ -619,6 +738,75 @@ class App:
         self._refresh_review_widgets()
         return window
 
+    def open_category_window(self) -> Optional[tk.Toplevel]:
+        """Opens (or raises) the pane for assigning each amount's category."""
+        existing = self._category_window
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_set()
+            self._refresh_category_widgets()
+            return existing
+
+        if not self.can_categorize():
+            return None
+
+        window = tk.Toplevel(self.root)
+        window.title("Categorize amounts")
+        self._category_window = window
+
+        ttk.Label(
+            window,
+            text=(
+                "Every amount needs a category.\nThe category rules "
+                "below suggest one from the line the amount was found on."
+            ),
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(10, 6))
+
+        self._category_caption = ttk.Label(window, justify="left")
+        self._category_caption.pack(anchor="w", padx=10)
+
+        suggestion_row = ttk.Frame(window)
+        suggestion_row.pack(fill="x", padx=10, pady=(4, 0))
+        self._category_suggestion_label = ttk.Label(suggestion_row, justify="left")
+        self._category_suggestion_label.pack(side="left")
+        self._category_suggestion_button = ttk.Button(
+            suggestion_row, text="Use this", command=self._on_accept_category_suggestion
+        )
+
+        entry_row = ttk.Frame(window)
+        entry_row.pack(fill="x", padx=10, pady=6)
+        ttk.Label(entry_row, text="Category:").pack(side="left")
+        self._category_entry = ttk.Entry(entry_row, width=24)
+        self._category_entry.pack(side="left", padx=6)
+        ttk.Button(entry_row, text="Confirm category", command=self._on_save_category).pack(
+            side="left"
+        )
+
+        note_row = ttk.Frame(window)
+        note_row.pack(fill="x", padx=10)
+        ttk.Label(note_row, text="Note (optional):").pack(side="left")
+        self._category_note_entry = ttk.Entry(note_row, width=40)
+        self._category_note_entry.pack(side="left", padx=6, fill="x", expand=True)
+
+        self._category_error = ttk.Label(window, foreground="red")
+        self._category_error.pack(anchor="w", padx=10)
+
+        nav = ttk.Frame(window)
+        nav.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(nav, text="< Previous", command=self.previous_category_review).pack(
+            side="left"
+        )
+        ttk.Button(nav, text="Next >", command=self.next_category_review).pack(
+            side="left", padx=4
+        )
+        self._category_position = ttk.Label(nav)
+        self._category_position.pack(side="left", padx=10)
+
+        self.category_review_index = 0
+        self._refresh_category_widgets()
+        return window
+
     def _read_note_entry(self) -> Optional[str]:
         return self._review_note_entry.get().strip() or None
 
@@ -717,6 +905,29 @@ class App:
         self._review_error.config(text=error or "")
         if error is None:
             self.next_review()
+
+    def _read_category_note_entry(self) -> Optional[str]:
+        return self._category_note_entry.get().strip() or None
+
+    def _on_save_category(self) -> None:
+        match = self.current_category_match()
+        if match is None:
+            return
+        error = self.confirm_category(
+            match, self._category_entry.get(), note=self._read_category_note_entry()
+        )
+        self._category_error.config(text=error or "")
+        if error is None:
+            self.next_category_review()
+
+    def _on_accept_category_suggestion(self) -> None:
+        match = self.current_category_match()
+        if match is None:
+            return
+        error = self.accept_category_suggestion(match, note=self._read_category_note_entry())
+        self._category_error.config(text=error or "")
+        if error is None:
+            self.next_category_review()
 
     def _show_crop(self, match: MatchRecord) -> None:
         """Displays the pixels the amount was read from, if there are any."""
@@ -822,6 +1033,17 @@ class App:
             self._review_button.state(["disabled"])
             self._review_button.config(text="Review Amounts...")
 
+    def _refresh_category_button_state(self) -> None:
+        """Enables the button once a result exists -- every match needs a
+        category, so unlike Review Amounts this never depends on whether
+        anything was OCR-guessed."""
+        if not hasattr(self, "_category_button"):
+            return
+        if self.can_categorize():
+            self._category_button.state(["!disabled"])
+        else:
+            self._category_button.state(["disabled"])
+
     def _refresh_run_button_state(self) -> None:
         if self.can_run():
             self._run_button.state(["!disabled"])
@@ -846,6 +1068,7 @@ class App:
         if self.last_result is None:
             return
         self._refresh_review_button_state()
+        self._refresh_category_button_state()
         for doc in self.last_result.documents:
             self._insert_document_rows(doc)
         self._preview_tree.insert(
@@ -951,6 +1174,19 @@ class App:
         else:
             self._custom_pattern_entry.delete(0, tk.END)
             self._custom_label_entry.delete(0, tk.END)
+
+    def _on_add_category_rule(self) -> None:
+        pattern = self._category_pattern_entry.get().strip()
+        label = self._category_label_entry.get().strip()
+        if not pattern:
+            return
+        error = self.add_category_rule(pattern, label)
+        if error:
+            self._category_rule_error_label.config(text=error)
+        else:
+            self._category_rule_error_label.config(text="")
+            self._category_pattern_entry.delete(0, tk.END)
+            self._category_label_entry.delete(0, tk.END)
 
     def _on_export(self) -> None:
         if self.last_result is None:
