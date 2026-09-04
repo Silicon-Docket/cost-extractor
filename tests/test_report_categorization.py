@@ -40,7 +40,7 @@ def _result(matches: list[MatchRecord]) -> PipelineResult:
 
 def _sheet(tmp_path, result, name, rules=None):
     path = tmp_path / "report.xlsx"
-    save_workbook(build_workbook(result, rules), path)
+    save_workbook(build_workbook(result, category_rules=rules), path)
     return openpyxl.load_workbook(path)[name]
 
 
@@ -230,4 +230,10 @@ def test_categories_sheet_exists_header_only_with_zero_matches(tmp_path):
 def test_build_workbook_gains_the_categories_sheet(tmp_path):
     wb = build_workbook(_result([]))
 
-    assert wb.sheetnames == ["Summary", "Details", "Categories", "Revisions"]
+    assert wb.sheetnames == [
+        "Summary",
+        "Details",
+        "Categories",
+        "Revisions",
+        "Spend By Month",
+    ]

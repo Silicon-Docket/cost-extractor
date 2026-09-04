@@ -43,7 +43,13 @@ def _sample_result() -> PipelineResult:
 def test_build_workbook_has_details_and_summary_sheets():
     wb = build_workbook(_sample_result())
 
-    assert wb.sheetnames == ["Summary", "Details", "Categories", "Revisions"]
+    assert wb.sheetnames == [
+        "Summary",
+        "Details",
+        "Categories",
+        "Revisions",
+        "Spend By Month",
+    ]
 
 
 def test_details_sheet_lists_every_match():
@@ -63,22 +69,25 @@ def test_details_sheet_lists_every_match():
         "Read As Text",
         "Category",
         "Category Review",
+        "Spend Date",
+        "Spend Date Review",
     ]
 
     # These fixtures come from a text layer, so they carry no score and
-    # nothing is flagged. Neither match has a category confirmed, and
-    # _sample_result()'s matches carry no line_text, so nothing can be
-    # suggested either -- both read "Uncategorized"/REVIEW.
+    # nothing is flagged. Neither match has a category or a spend date
+    # confirmed, and _sample_result()'s matches carry no line_text and
+    # its documents no full_text, so neither can be suggested either --
+    # they read "Uncategorized"/REVIEW and "Undated"/REVIEW.
     row2 = [c.value for c in ws[2]]
     assert row2 == [
         "invoice.docx", "paragraph 1", "$1,234.56", "standard", 1234.56,
-        "text", None, None, None, "Uncategorized", "REVIEW",
+        "text", None, None, None, "Uncategorized", "REVIEW", "Undated", "REVIEW",
     ]
 
     row3 = [c.value for c in ws[3]]
     assert row3 == [
         "invoice.docx", "table 1, row 1, col 2", "($500)", "paren_negative", -500,
-        "text", None, None, None, "Uncategorized", "REVIEW",
+        "text", None, None, None, "Uncategorized", "REVIEW", "Undated", "REVIEW",
     ]
 
 
