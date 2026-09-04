@@ -163,6 +163,122 @@ into the same USD-labeled report. That's intentional: custom rules are an
 escape hatch for whatever your documents actually contain, not a currency
 converter.
 
+### Categorizing amounts
+
+Every amount needs a category decision — not just the ones OCR guessed at.
+Click **Categorize Amounts...** after a run to work through them one at a
+time. For each, the app suggests a category by matching the **Categories**
+panel's rules against the line of text the amount was found on, and offers
+two ways to resolve it:
+
+- **Confirm category** records whatever you type in the **Category** field,
+  regardless of any suggestion shown.
+- **Use this** accepts the suggested category as-is, when one exists.
+
+**Note (optional)** works the same way it does in the Review Amounts pane:
+left blank, accepting a suggestion is noted as `confirmed`; typing your own
+note records it instead. Nothing is overwritten — categorizing the same
+amount twice keeps both decisions in its history, the same append-only
+pattern the value review uses.
+
+The four built-in starter categories — Materials, Labor, Travel, Fees — are
+illustrative, not exhaustive. Disable any you don't need, and add your own,
+in the **Categories** panel, the same way built-in money formats work in the
+**Money Formats** panel above it.
+
+**Adding a custom category pattern.** Use the **Custom pattern** row in the
+**Categories** panel the same way you would in **Money Formats**: enter a
+regex, optionally a label, and click **Add**. The key difference is that a
+category pattern is presence detection, not value extraction — there's no
+required `(?P<amount>...)` group; any regex that matches somewhere on the
+amount's line counts as a hit. It's also matched against just that one
+line, not the whole page, so a pattern like `\bpermits?\b` only suggests
+**Permits** for amounts on lines that actually mention a permit.
+
+**Categories in the report.** The Details sheet gains **Category** and
+**Category Review** columns: a confirmed category, a
+suggested-but-unconfirmed one shown as `"{label} (suggested, unconfirmed)"`,
+or `"Uncategorized"` when nothing matched and nothing was typed. The
+**Revisions** sheet gains a **Dimension** column so a money-value correction
+and a category decision on the same amount are told apart in the same audit
+trail. A new **Categories** sheet breaks totals down per category, with
+confirmed and unconfirmed amounts kept in separate rows rather than blended
+together. The Summary sheet adds an **Amounts not yet categorized** count,
+alongside the existing review counts.
+### Confirming spend dates
+
+Click **Confirm Spend Dates...** after a run. Every amount needs a spend
+date decision — not just the ones OCR guessed — because a figure with no
+date attached can't be placed on a timeline. For each match, the window
+shows the amount and, if one was found, a suggestion: the nearest
+date-shaped text anywhere in the same document, however far from the
+amount it happens to sit.
+
+- **Use this** confirms the suggestion, when there is one.
+- Typing a date and clicking **Save date** records it directly — for when
+  there's no suggestion, the suggestion is wrong, or you'd rather confirm a
+  different date from the document.
+- **No date applies** is a deliberate decision, not a way to skip a match:
+  it records that this amount genuinely has no associated spend date, so
+  the report can tell "reviewed, doesn't apply" apart from "nobody has
+  looked yet."
+- **Note (optional)** records why, in your own words, same as the Review
+  Amounts pane. Left blank: **Use this** notes the decision as `confirmed`,
+  **No date applies** notes it as `confirmed no associated date`, and
+  **Save date** leaves it blank — typing your own note always overrides
+  these defaults.
+
+As with amount corrections, nothing is overwritten: confirming a match's
+date twice keeps both decisions.
+
+The built-in date formats are `MM/DD/YYYY` and `MM-DD-YYYY`, four-digit
+year, **month before day** — the US convention. `03/04/2026` means March
+4th, not April 3rd, not the other way around. ISO-style dates
+(`2026-06-14`) aren't recognized by the built-in rule; if your documents
+use that format, or a day-first one, add a custom pattern below.
+
+The report gains two Details columns: **Spend Date** and **Spend Date
+Review**. A match's Spend Date reads as a confirmed date, `No Date
+(confirmed)` for a deliberate "doesn't apply" decision, `Undated` when
+nobody has reviewed it and no suggestion was found, or `{date} (suggested,
+unconfirmed)` when a suggestion exists but hasn't been confirmed. The
+Revisions sheet gains a **Dimension** column so a money-value correction
+and a spend-date decision on the same match are told apart in the same
+sheet rather than mixed together undistinguished. And a new **Spend By
+Month** sheet is the actual point of all this: one row per calendar month
+with a confirmed spend date, plus a `No Date (confirmed)` row and a `Not
+Yet Reviewed` row when either applies, so a spend-over-time total never
+silently drops an unreviewed or dateless amount. The Summary sheet adds a
+**Dates Not Yet Reviewed** count alongside the existing OCR one.
+
+### Adding a custom date-format pattern
+
+The built-in numeric format won't cover every document — a day-first
+convention, for instance. In the **Date Formats**
+panel, use the **Custom pattern** row to add your own, the same way you
+would in the Money Formats panel:
+
+1. Enter a regular expression in the pattern field. It **must** contain
+   named capture groups called `year`, `month`, and `day` — not `amount`,
+   since a date pattern is describing a calendar date, not a dollar
+   figure. Patterns missing any of the three are rejected with an inline
+   error rather than being added.
+2. Optionally enter a label to show next to its checkbox (defaults to
+   "Custom date N" if left blank).
+3. Click **Add**. On success, the pattern appears as its own checkbox,
+   enabled by default. On failure — invalid regex syntax, a missing group,
+   or a pattern flagged as too slow to run safely — an error message
+   appears inline instead of crashing the app; nothing is added.
+
+The three groups can appear in any order in your pattern; only their
+names matter for how the match is interpreted. For a day-first format
+like `14.06.2026`:
+
+```
+Pattern: (?P<day>\d{1,2})\.(?P<month>\d{1,2})\.(?P<year>\d{4})
+Label:   Day-first (dotted)
+```
+
 ## Dev setup
 
 ```

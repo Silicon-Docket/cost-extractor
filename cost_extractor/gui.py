@@ -7,6 +7,7 @@ import queue
 import threading
 import tkinter as tk
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from typing import Optional
@@ -28,6 +29,8 @@ except Exception:  # noqa: BLE001 - Pillow's Tk bridge needs a Tk-enabled build
     ImageTk = None
 
 from cost_extractor import handwriting
+from cost_extractor import category_rules
+from cost_extractor import date_rules
 from cost_extractor.revisions import format_revision_timestamp, record_revision
 from cost_extractor.money_parser import (
     CUSTOM_PATTERN_EXAMPLE_LABEL,
@@ -85,10 +88,37 @@ class App:
         self.review_index = 0
         self._review_photo = None
         self._second_opinions: dict[int, Optional[str]] = {}
+        self.category_rules: list[category_rules.CategoryRule] = category_rules.default_rules()
+        # Same id(match)-keyed cache shape as _second_opinions -- must be
+        # invalidated whenever self.category_rules changes (Task 4) AND
+        # on every new pipeline run (Step 5 below) -- a stale entry from
+        # a previous run's freed MatchRecord could otherwise be returned
+        # for an unrelated match in a new run that happens to land at
+        # the same id().
+        self._category_suggestions: dict[int, Optional[str]] = {}
+        self._custom_category_rule_count = 0
+        self._category_window: Optional[tk.Toplevel] = None
+        self.category_review_index = 0
+        self.date_rules: list[date_rules.DateRule] = date_rules.default_rules()
+        # Same id(match)-keyed cache shape as _second_opinions -- must be
+        # invalidated whenever self.date_rules changes (Task 4).
+        self._date_suggestions: dict[int, "Optional[date]"] = {}
+        # Built once per run (in _run_worker, below) so a match can find
+        # its owning document -- every existing flow iterates
+        # "for doc in ... for m in doc.matches" and never needed the
+        # reverse direction until now.
+        self._match_documents: dict[int, DocumentResult] = {}
+        self._custom_date_rule_count = 0
+        self._spend_date_window: Optional[tk.Toplevel] = None
+        self.spend_date_review_index = 0
 
         self._build_widgets()
         self._refresh_rule_checkboxes()
         self._refresh_run_button_state()
+        self._refresh_category_rule_checkboxes()
+        self._refresh_category_button_state()
+        self._refresh_date_rule_checkboxes()
+        self._refresh_spend_date_button_state()
 
     # ---- state mutation: pure-ish logic, testable without a running mainloop ----
 
@@ -237,6 +267,370 @@ class App:
         combined_note = f"{cleaned} ({provenance})" if cleaned else provenance
         return self.apply_correction(match, reading, note=combined_note)
 
+    def _document_for(self, match: MatchRecord) -> DocumentResult:
+        return self._match_documents[id(match)]
+
+    def suggest_spend_date(self, match: MatchRecord) -> Optional[date]:
+        """The nearest date-like text found anywhere in this match's
+        document, computed on demand and cached per match. Recomputed
+        only when the cache is explicitly invalidated (rule changes --
+        see Task 4), never on a timer or a document reload."""
+        cached = self._date_suggestions.get(id(match), _UNREAD)
+        if cached is not _UNREAD:
+            return cached
+        document = self._document_for(match)
+        candidates = date_rules.find_dates(document.full_text, self.date_rules)
+        nearest = date_rules.nearest_date(candidates, match.doc_offset)
+        # nearest_date returns the closest DateMatch (or None), not a
+        # bare date -- .value is None when the closest date-shaped text
+        # nearby failed to parse, and that's still "no suggestion," not
+        # license to fall back to a more distant candidate.
+        suggestion = nearest.value if nearest is not None else None
+        self._date_suggestions[id(match)] = suggestion
+        return suggestion
+
+    def confirm_spend_date(
+        self, match: MatchRecord, date_str: str, note: Optional[str] = None
+    ) -> Optional[str]:
+        """Records a human-typed spend date. Parses date_str with the
+        same date_rules the suggestion engine uses, so a typed correction
+        is held to the same format understanding as a suggestion."""
+        found = date_rules.find_dates(date_str, self.date_rules)
+        parsed = next((m.value for m in found if m.value is not None), None)
+        if parsed is None:
+            return "Couldn't recognize that as a date"
+        record_revision(match.spend_date_revisions, parsed, note=note)
+        self._after_spend_date_change()
+        return None
+
+    def accept_date_suggestion(
+        self, match: MatchRecord, note: Optional[str] = None
+    ) -> Optional[str]:
+        suggestion = self.suggest_spend_date(match)
+        if suggestion is None:
+            return "No date suggestion available for this document."
+        cleaned = (note or "").strip() or None
+        record_revision(match.spend_date_revisions, suggestion, note=cleaned or "confirmed")
+        self._after_spend_date_change()
+        return None
+
+    def confirm_no_date(self, match: MatchRecord, note: Optional[str] = None) -> None:
+        """The reviewer's explicit "no date applies" decision -- available
+        regardless of whether a suggestion exists, distinct from
+        accept_date_suggestion's automatic refusal when there is nothing
+        to accept. Makes spend_date_reviewed=True with
+        effective_spend_date=None a state the app produces on purpose."""
+        record_revision(
+            match.spend_date_revisions, None, note=note or "confirmed no associated date"
+        )
+        self._after_spend_date_change()
+
+    def _after_spend_date_change(self) -> None:
+        self._refresh_spend_date_widgets()
+
+    def _refresh_spend_date_widgets(self) -> None:
+        window = self._spend_date_window
+        if window is None or not window.winfo_exists():
+            return
+
+        queue = self.spend_date_queue()
+        match = self.current_spend_date_match()
+        if match is None:
+            self._spend_date_caption.config(text="Nothing left to confirm.")
+            self._spend_date_position.config(text="")
+            return
+
+        self._spend_date_caption.config(
+            text=(
+                f"{match.display_name} — {match.location}\n"
+                f"amount: {match.raw_text}  {self._spend_date_review_summary(match)}"
+            )
+        )
+        self._spend_date_entry.delete(0, tk.END)
+        if match.spend_date_reviewed and match.effective_spend_date is not None:
+            self._spend_date_entry.insert(0, match.effective_spend_date.strftime("%m/%d/%Y"))
+        self._spend_date_note_entry.delete(0, tk.END)
+        self._spend_date_error.config(text="")
+        self._spend_date_position.config(
+            text=f"{self.spend_date_review_index + 1} of {len(queue)}"
+        )
+        self._refresh_spend_date_suggestion_widgets(match)
+
+    def _spend_date_review_summary(self, match: MatchRecord) -> str:
+        count = len(match.spend_date_revisions)
+        if count == 0:
+            return "(not yet reviewed)"
+        latest = match.spend_date_revisions[-1]
+        when = format_revision_timestamp(latest.at)
+        note_suffix = f" ({latest.note})" if latest.note else ""
+        value_text = latest.value.isoformat() if latest.value is not None else "no date"
+        if count == 1:
+            return f"— reviewed once: {value_text} at {when}{note_suffix}"
+        return f"— reviewed {count}x, latest: {value_text} at {when}{note_suffix}"
+
+    def _refresh_spend_date_suggestion_widgets(self, match: MatchRecord) -> None:
+        suggestion = self.suggest_spend_date(match)
+        if suggestion is None:
+            self._spend_date_suggestion_label.config(
+                text="No date suggestion found in this document."
+            )
+            self._spend_date_suggestion_button.pack_forget()
+            return
+        self._spend_date_suggestion_label.config(text=f"Suggested: {suggestion.isoformat()}")
+        self._spend_date_suggestion_button.pack(side="left", padx=8)
+
+    def add_date_rule(self, pattern_str: str, label: Optional[str] = None) -> Optional[str]:
+        """Validates and adds a custom date rule. Returns an error
+        message on failure (never raises), or None on success."""
+        try:
+            rule = date_rules.build_custom_rule(
+                pattern_str, label or None, self._custom_date_rule_count
+            )
+        except ValueError as e:
+            return str(e)
+        self._custom_date_rule_count += 1
+        self.date_rules.append(rule)
+        self._date_suggestions.clear()
+        self._refresh_date_rule_checkboxes()
+        return None
+
+    def remove_date_rule(self, rule_id: str) -> None:
+        rule = next((r for r in self.date_rules if r.id == rule_id), None)
+        if rule is None or rule.built_in:
+            return  # built-ins are disableable but not deletable
+        self.date_rules = [r for r in self.date_rules if r.id != rule_id]
+        self._date_suggestions.clear()
+        self._refresh_date_rule_checkboxes()
+
+    def toggle_date_rule(self, rule_id: str, enabled: bool) -> None:
+        for r in self.date_rules:
+            if r.id == rule_id:
+                r.enabled = enabled
+        self._date_suggestions.clear()
+        self._refresh_date_rule_checkboxes()
+
+    def _refresh_date_rule_checkboxes(self) -> None:
+        if not hasattr(self, "_date_rules_container"):
+            return
+        for child in self._date_rules_container.winfo_children():
+            child.destroy()
+
+        for rule in self.date_rules:
+            row = ttk.Frame(self._date_rules_container)
+            row.pack(fill="x")
+            var = tk.BooleanVar(value=rule.enabled)
+            cb = ttk.Checkbutton(
+                row,
+                text=rule.label,
+                variable=var,
+                command=lambda r=rule, v=var: self.toggle_date_rule(r.id, v.get()),
+            )
+            cb.pack(side="left")
+            if not rule.built_in:
+                ttk.Button(
+                    row,
+                    text="×",
+                    width=2,
+                    command=lambda rid=rule.id: self.remove_date_rule(rid),
+                ).pack(side="left")
+
+    def spend_date_queue(self) -> list[MatchRecord]:
+        """Every match, not just OCR-derived ones -- a spend date applies
+        regardless of how the amount was read."""
+        if self.last_result is None:
+            return []
+        return [m for doc in self.last_result.documents for m in doc.matches]
+
+    def can_confirm_spend_dates(self) -> bool:
+        return bool(self.spend_date_queue())
+
+    def current_spend_date_match(self) -> Optional[MatchRecord]:
+        queue = self.spend_date_queue()
+        if not queue:
+            return None
+        return queue[min(self.spend_date_review_index, len(queue) - 1)]
+
+    def next_spend_date_review(self) -> None:
+        queue = self.spend_date_queue()
+        if queue:
+            self.spend_date_review_index = min(
+                self.spend_date_review_index + 1, len(queue) - 1
+            )
+        self._refresh_spend_date_widgets()
+
+    def previous_spend_date_review(self) -> None:
+        self.spend_date_review_index = max(0, self.spend_date_review_index - 1)
+        self._refresh_spend_date_widgets()
+
+    def suggest_category(self, match: MatchRecord) -> Optional[str]:
+        """The best category for this match's own line, computed on
+        demand and cached per match. Recomputed only when the cache is
+        explicitly invalidated (rule changes -- Task 4 -- or a new run --
+        Step 5 above), never on a timer or a document reload."""
+        cached = self._category_suggestions.get(id(match), _UNREAD)
+        if cached is not _UNREAD:
+            return cached
+        suggestion = category_rules.suggest_category(match.line_text, self.category_rules)
+        self._category_suggestions[id(match)] = suggestion
+        return suggestion
+
+    def confirm_category(
+        self, match: MatchRecord, category: str, note: Optional[str] = None
+    ) -> Optional[str]:
+        cleaned = category.strip()
+        if not cleaned:
+            return "Enter a category"
+        record_revision(match.category_revisions, cleaned, note=note)
+        self._after_category_change()
+        return None
+
+    def accept_category_suggestion(
+        self, match: MatchRecord, note: Optional[str] = None
+    ) -> Optional[str]:
+        suggestion = self.suggest_category(match)
+        if suggestion is None:
+            return "No category suggestion available for this line."
+        cleaned = (note or "").strip() or None
+        record_revision(match.category_revisions, suggestion, note=cleaned or "confirmed")
+        self._after_category_change()
+        return None
+
+    def _after_category_change(self) -> None:
+        self._refresh_category_widgets()
+
+    def _refresh_category_widgets(self) -> None:
+        window = self._category_window
+        if window is None or not window.winfo_exists():
+            return
+
+        queue = self.category_queue()
+        match = self.current_category_match()
+        if match is None:
+            self._category_caption.config(text="Nothing left to categorize.")
+            self._category_position.config(text="")
+            return
+
+        self._category_caption.config(
+            text=(
+                f'{match.display_name} — {match.location}\n'
+                f'line: "{match.line_text}"  {self._category_review_summary(match)}'
+            )
+        )
+        self._category_entry.delete(0, tk.END)
+        if match.category_reviewed and match.effective_category is not None:
+            self._category_entry.insert(0, match.effective_category)
+        self._category_note_entry.delete(0, tk.END)
+        self._category_error.config(text="")
+        self._category_position.config(
+            text=f"{self.category_review_index + 1} of {len(queue)}"
+        )
+        self._refresh_category_suggestion_widgets(match)
+
+    def _category_review_summary(self, match: MatchRecord) -> str:
+        count = len(match.category_revisions)
+        if count == 0:
+            return "(not yet reviewed)"
+        latest = match.category_revisions[-1]
+        when = format_revision_timestamp(latest.at)
+        note_suffix = f" ({latest.note})" if latest.note else ""
+        if count == 1:
+            return f"— reviewed once: {latest.value} at {when}{note_suffix}"
+        return f"— reviewed {count}x, latest: {latest.value} at {when}{note_suffix}"
+
+    def _refresh_category_suggestion_widgets(self, match: MatchRecord) -> None:
+        suggestion = self.suggest_category(match)
+        if suggestion is None:
+            self._category_suggestion_label.config(
+                text="No category suggestion for this line."
+            )
+            self._category_suggestion_button.pack_forget()
+            return
+        self._category_suggestion_label.config(text=f"Suggested: {suggestion}")
+        self._category_suggestion_button.pack(side="left", padx=8)
+
+    def add_category_rule(self, pattern_str: str, label: str) -> Optional[str]:
+        """Validates and adds a custom category rule. Returns an error
+        message on failure (never raises), or None on success."""
+        try:
+            rule = category_rules.build_custom_rule(
+                pattern_str, label or None, self._custom_category_rule_count
+            )
+        except ValueError as e:
+            return str(e)
+        self._custom_category_rule_count += 1
+        self.category_rules.append(rule)
+        self._category_suggestions.clear()
+        self._refresh_category_rule_checkboxes()
+        self._refresh_category_widgets()
+        return None
+
+    def remove_category_rule(self, rule_id: str) -> None:
+        self.category_rules = [r for r in self.category_rules if r.id != rule_id]
+        self._category_suggestions.clear()
+        self._refresh_category_rule_checkboxes()
+        self._refresh_category_widgets()
+
+    def toggle_category_rule(self, rule_id: str, enabled: bool) -> None:
+        for r in self.category_rules:
+            if r.id == rule_id:
+                r.enabled = enabled
+        self._category_suggestions.clear()
+        self._refresh_category_rule_checkboxes()
+        self._refresh_category_widgets()
+
+    def _refresh_category_rule_checkboxes(self) -> None:
+        if not hasattr(self, "_category_rules_container"):
+            return
+        for child in self._category_rules_container.winfo_children():
+            child.destroy()
+
+        for rule in self.category_rules:
+            row = ttk.Frame(self._category_rules_container)
+            row.pack(fill="x")
+            var = tk.BooleanVar(value=rule.enabled)
+            cb = ttk.Checkbutton(
+                row,
+                text=rule.label,
+                variable=var,
+                command=lambda r=rule, v=var: self.toggle_category_rule(r.id, v.get()),
+            )
+            cb.pack(side="left")
+            if not rule.built_in:
+                ttk.Button(
+                    row,
+                    text="×",
+                    width=2,
+                    command=lambda rid=rule.id: self.remove_category_rule(rid),
+                ).pack(side="left")
+
+    def category_queue(self) -> list[MatchRecord]:
+        """Every match, not just OCR-derived ones -- a category applies
+        regardless of how the amount was read."""
+        if self.last_result is None:
+            return []
+        return [m for doc in self.last_result.documents for m in doc.matches]
+
+    def can_categorize(self) -> bool:
+        return bool(self.category_queue())
+
+    def current_category_match(self) -> Optional[MatchRecord]:
+        queue = self.category_queue()
+        if not queue:
+            return None
+        return queue[min(self.category_review_index, len(queue) - 1)]
+
+    def next_category_review(self) -> None:
+        queue = self.category_queue()
+        if queue:
+            self.category_review_index = min(
+                self.category_review_index + 1, len(queue) - 1
+            )
+        self._refresh_category_widgets()
+
+    def previous_category_review(self) -> None:
+        self.category_review_index = max(0, self.category_review_index - 1)
+        self._refresh_category_widgets()
+
     def current_review_match(self) -> Optional[MatchRecord]:
         queue = self.reviewable_matches()
         if not queue:
@@ -294,6 +688,12 @@ class App:
             progress_cb=lambda name: self._progress_queue.put(f"progress:{name}"),
             cancel_flag=self.cancel_flag,
         )
+        self._category_suggestions.clear()
+        self._second_opinions.clear()
+        self._match_documents = {
+            id(m): doc for doc in result.documents for m in doc.matches
+        }
+        self._date_suggestions.clear()
         self.last_result = result
         self._progress_queue.put("done")
 
@@ -308,6 +708,10 @@ class App:
                     self._worker_thread = None
                     self._set_status("Done")
                     self._refresh_preview_widget()
+                    self.review_index = 0
+                    self._refresh_review_widgets(compute_second_opinion=False)
+                    self.category_review_index = 0
+                    self._refresh_category_widgets()
                     return
                 elif msg.startswith("progress:"):
                     self._set_status(f"Processing: {msg[len('progress:'):]}")
@@ -322,7 +726,11 @@ class App:
         if self.last_result is None:
             return "Nothing to export yet — run first."
         try:
-            wb = build_workbook(self.last_result)
+            wb = build_workbook(
+                self.last_result,
+                category_rules=self.category_rules,
+                date_rules=self.date_rules,
+            )
             save_workbook(wb, path)
         except Exception as e:  # noqa: BLE001 - e.g. file open elsewhere
             return str(e)
@@ -401,6 +809,61 @@ class App:
             lambda e: self._custom_hint_label.config(wraplength=max(e.width - 16, 100)),
         )
 
+        category_rules_frame = ttk.LabelFrame(self.root, text="Categories")
+        category_rules_frame.pack(fill="x", padx=8, pady=4)
+        self._category_rules_container = ttk.Frame(category_rules_frame)
+        self._category_rules_container.pack(fill="x")
+        self._category_rule_error_label = ttk.Label(category_rules_frame, foreground="red", text="")
+        self._category_rule_error_label.pack(fill="x")
+
+        category_custom_frame = ttk.Frame(category_rules_frame)
+        category_custom_frame.pack(fill="x", pady=(4, 0))
+        ttk.Label(category_custom_frame, text="Custom pattern:").pack(side="left")
+        self._category_pattern_entry = ttk.Entry(category_custom_frame)
+        self._category_pattern_entry.pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Label(category_custom_frame, text="Label:").pack(side="left")
+        self._category_label_entry = ttk.Entry(category_custom_frame, width=15)
+        self._category_label_entry.pack(side="left", padx=4)
+        ttk.Button(
+            category_custom_frame, text="Add", command=self._on_add_category_rule
+        ).pack(side="left")
+
+        self._category_hint_label = ttk.Label(
+            category_rules_frame,
+            foreground="gray",
+            text="Regex matched against the line the amount was found on.",
+        )
+        self._category_hint_label.pack(fill="x", pady=(0, 4))
+
+        date_rules_frame = ttk.LabelFrame(self.root, text="Date Formats")
+        date_rules_frame.pack(fill="x", padx=8, pady=4)
+        self._date_rules_container = ttk.Frame(date_rules_frame)
+        self._date_rules_container.pack(fill="x")
+        self._date_rule_error_label = ttk.Label(date_rules_frame, foreground="red", text="")
+        self._date_rule_error_label.pack(fill="x")
+
+        date_custom_frame = ttk.Frame(date_rules_frame)
+        date_custom_frame.pack(fill="x", pady=(4, 0))
+        ttk.Label(date_custom_frame, text="Custom pattern:").pack(side="left")
+        self._date_pattern_entry = ttk.Entry(date_custom_frame)
+        self._date_pattern_entry.pack(side="left", fill="x", expand=True, padx=4)
+        ttk.Label(date_custom_frame, text="Label:").pack(side="left")
+        self._date_label_entry = ttk.Entry(date_custom_frame, width=15)
+        self._date_label_entry.pack(side="left", padx=4)
+        ttk.Button(date_custom_frame, text="Add", command=self._on_add_date_rule).pack(
+            side="left"
+        )
+
+        self._date_hint_label = ttk.Label(
+            date_rules_frame,
+            foreground="gray",
+            text=(
+                "Regex with required (?P<year>...), (?P<month>...), "
+                "(?P<day>...) groups."
+            ),
+        )
+        self._date_hint_label.pack(fill="x", pady=(0, 4))
+
         run_frame = ttk.Frame(self.root)
         run_frame.pack(fill="x", padx=8, pady=4)
         self._run_button = ttk.Button(
@@ -415,6 +878,16 @@ class App:
         )
         self._review_button.pack(side="left", padx=4)
         self._review_button.state(["disabled"])
+        self._category_button = ttk.Button(
+            run_frame, text="Categorize Amounts...", command=self.open_category_window
+        )
+        self._category_button.pack(side="left", padx=4)
+        self._category_button.state(["disabled"])
+        self._spend_date_button = ttk.Button(
+            run_frame, text="Confirm Spend Dates...", command=self.open_spend_date_window
+        )
+        self._spend_date_button.pack(side="left", padx=4)
+        self._spend_date_button.state(["disabled"])
         ttk.Button(
             run_frame, text="Save Report...", command=self._on_export
         ).pack(side="left", padx=4)
@@ -526,6 +999,149 @@ class App:
         self._refresh_review_widgets()
         return window
 
+    def open_spend_date_window(self) -> Optional[tk.Toplevel]:
+        """Opens (or raises) the pane for confirming each amount's spend
+        date."""
+        existing = self._spend_date_window
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_set()
+            self._refresh_spend_date_widgets()
+            return existing
+
+        if not self.can_confirm_spend_dates():
+            return None
+
+        window = tk.Toplevel(self.root)
+        window.title("Confirm spend dates")
+        self._spend_date_window = window
+
+        ttk.Label(
+            window,
+            text=(
+                'Every amount needs a spend date, or a deliberate "no date '
+                'applies."\nThe nearest date found in the document is '
+                "suggested below."
+            ),
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(10, 6))
+
+        self._spend_date_caption = ttk.Label(window, justify="left")
+        self._spend_date_caption.pack(anchor="w", padx=10)
+
+        suggestion_row = ttk.Frame(window)
+        suggestion_row.pack(fill="x", padx=10, pady=(4, 0))
+        self._spend_date_suggestion_label = ttk.Label(suggestion_row, justify="left")
+        self._spend_date_suggestion_label.pack(side="left")
+        self._spend_date_suggestion_button = ttk.Button(
+            suggestion_row, text="Use this", command=self._on_accept_date_suggestion
+        )
+
+        entry_row = ttk.Frame(window)
+        entry_row.pack(fill="x", padx=10, pady=6)
+        ttk.Label(entry_row, text="Date:").pack(side="left")
+        self._spend_date_entry = ttk.Entry(entry_row, width=18)
+        self._spend_date_entry.pack(side="left", padx=6)
+        ttk.Button(entry_row, text="Save date", command=self._on_save_spend_date).pack(
+            side="left"
+        )
+        ttk.Button(
+            entry_row, text="No date applies", command=self._on_confirm_no_date
+        ).pack(side="left", padx=4)
+
+        note_row = ttk.Frame(window)
+        note_row.pack(fill="x", padx=10)
+        ttk.Label(note_row, text="Note (optional):").pack(side="left")
+        self._spend_date_note_entry = ttk.Entry(note_row, width=40)
+        self._spend_date_note_entry.pack(side="left", padx=6, fill="x", expand=True)
+
+        self._spend_date_error = ttk.Label(window, foreground="red")
+        self._spend_date_error.pack(anchor="w", padx=10)
+
+        nav = ttk.Frame(window)
+        nav.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(nav, text="< Previous", command=self.previous_spend_date_review).pack(
+            side="left"
+        )
+        ttk.Button(nav, text="Next >", command=self.next_spend_date_review).pack(
+            side="left", padx=4
+        )
+        self._spend_date_position = ttk.Label(nav)
+        self._spend_date_position.pack(side="left", padx=10)
+
+        self.spend_date_review_index = 0
+        self._refresh_spend_date_widgets()
+        return window
+
+    def open_category_window(self) -> Optional[tk.Toplevel]:
+        """Opens (or raises) the pane for assigning each amount's category."""
+        existing = self._category_window
+        if existing is not None and existing.winfo_exists():
+            existing.lift()
+            existing.focus_set()
+            self._refresh_category_widgets()
+            return existing
+
+        if not self.can_categorize():
+            return None
+
+        window = tk.Toplevel(self.root)
+        window.title("Categorize amounts")
+        self._category_window = window
+
+        ttk.Label(
+            window,
+            text=(
+                "Every amount needs a category.\nThe category rules "
+                "below suggest one from the line the amount was found on."
+            ),
+            justify="left",
+        ).pack(anchor="w", padx=10, pady=(10, 6))
+
+        self._category_caption = ttk.Label(window, justify="left")
+        self._category_caption.pack(anchor="w", padx=10)
+
+        suggestion_row = ttk.Frame(window)
+        suggestion_row.pack(fill="x", padx=10, pady=(4, 0))
+        self._category_suggestion_label = ttk.Label(suggestion_row, justify="left")
+        self._category_suggestion_label.pack(side="left")
+        self._category_suggestion_button = ttk.Button(
+            suggestion_row, text="Use this", command=self._on_accept_category_suggestion
+        )
+
+        entry_row = ttk.Frame(window)
+        entry_row.pack(fill="x", padx=10, pady=6)
+        ttk.Label(entry_row, text="Category:").pack(side="left")
+        self._category_entry = ttk.Entry(entry_row, width=24)
+        self._category_entry.pack(side="left", padx=6)
+        ttk.Button(entry_row, text="Confirm category", command=self._on_save_category).pack(
+            side="left"
+        )
+
+        note_row = ttk.Frame(window)
+        note_row.pack(fill="x", padx=10)
+        ttk.Label(note_row, text="Note (optional):").pack(side="left")
+        self._category_note_entry = ttk.Entry(note_row, width=40)
+        self._category_note_entry.pack(side="left", padx=6, fill="x", expand=True)
+
+        self._category_error = ttk.Label(window, foreground="red")
+        self._category_error.pack(anchor="w", padx=10)
+
+        nav = ttk.Frame(window)
+        nav.pack(fill="x", padx=10, pady=(4, 10))
+        ttk.Button(nav, text="< Previous", command=self.previous_category_review).pack(
+            side="left"
+        )
+        ttk.Button(nav, text="Next >", command=self.next_category_review).pack(
+            side="left", padx=4
+        )
+        self._category_position = ttk.Label(nav)
+        self._category_position.pack(side="left", padx=10)
+
+        self.category_review_index = 0
+        self._refresh_category_widgets()
+        return window
+
     def _read_note_entry(self) -> Optional[str]:
         return self._review_note_entry.get().strip() or None
 
@@ -571,7 +1187,7 @@ class App:
             f"{latest.value} at {when}{note_suffix}"
         )
 
-    def _refresh_review_widgets(self) -> None:
+    def _refresh_review_widgets(self, compute_second_opinion: bool = True) -> None:
         window = self._review_window
         if window is None or not window.winfo_exists():
             return
@@ -597,11 +1213,25 @@ class App:
         self._review_position.config(
             text=f"{self.review_index + 1} of {len(queue)}"
         )
-        self._refresh_second_opinion_widgets(match)
+        self._refresh_second_opinion_widgets(match, compute=compute_second_opinion)
 
-    def _refresh_second_opinion_widgets(self, match: MatchRecord) -> None:
-        """Shows the handwriting model's reading, when one is installed."""
-        reading = self.second_opinion(match)
+    def _refresh_second_opinion_widgets(
+        self, match: MatchRecord, compute: bool = True
+    ) -> None:
+        """Shows the handwriting model's reading, when one is installed.
+
+        `compute=False` renders only an already-cached reading and never
+        runs the model. The automatic refresh after a run completes happens
+        on the Tk event-loop thread with a just-cleared cache, so computing
+        there would freeze the window at the exact moment it reports
+        "Done" -- the reading fills in when the reviewer navigates to the
+        match instead.
+        """
+        if compute:
+            reading = self.second_opinion(match)
+        else:
+            cached = self._second_opinions.get(id(match), _UNREAD)
+            reading = None if cached is _UNREAD else cached
         if not reading:
             self._second_opinion_label.config(text="")
             self._second_opinion_button.pack_forget()
@@ -624,6 +1254,60 @@ class App:
         self._review_error.config(text=error or "")
         if error is None:
             self.next_review()
+
+    def _read_spend_date_note_entry(self) -> Optional[str]:
+        return self._spend_date_note_entry.get().strip() or None
+
+    def _on_save_spend_date(self) -> None:
+        match = self.current_spend_date_match()
+        if match is None:
+            return
+        error = self.confirm_spend_date(
+            match, self._spend_date_entry.get(), note=self._read_spend_date_note_entry()
+        )
+        self._spend_date_error.config(text=error or "")
+        if error is None:
+            self.next_spend_date_review()
+
+    def _on_accept_date_suggestion(self) -> None:
+        match = self.current_spend_date_match()
+        if match is None:
+            return
+        error = self.accept_date_suggestion(match, note=self._read_spend_date_note_entry())
+        self._spend_date_error.config(text=error or "")
+        if error is None:
+            self.next_spend_date_review()
+
+    def _on_confirm_no_date(self) -> None:
+        match = self.current_spend_date_match()
+        if match is None:
+            return
+        self.confirm_no_date(match, note=self._read_spend_date_note_entry())
+        self._spend_date_error.config(text="")
+        self.next_spend_date_review()
+
+    def _read_category_note_entry(self) -> Optional[str]:
+        return self._category_note_entry.get().strip() or None
+
+    def _on_save_category(self) -> None:
+        match = self.current_category_match()
+        if match is None:
+            return
+        error = self.confirm_category(
+            match, self._category_entry.get(), note=self._read_category_note_entry()
+        )
+        self._category_error.config(text=error or "")
+        if error is None:
+            self.next_category_review()
+
+    def _on_accept_category_suggestion(self) -> None:
+        match = self.current_category_match()
+        if match is None:
+            return
+        error = self.accept_category_suggestion(match, note=self._read_category_note_entry())
+        self._category_error.config(text=error or "")
+        if error is None:
+            self.next_category_review()
 
     def _show_crop(self, match: MatchRecord) -> None:
         """Displays the pixels the amount was read from, if there are any."""
@@ -729,6 +1413,28 @@ class App:
             self._review_button.state(["disabled"])
             self._review_button.config(text="Review Amounts...")
 
+    def _refresh_spend_date_button_state(self) -> None:
+        """Enables the button once a result exists -- every match needs a
+        spend date, so unlike Review Amounts this never depends on
+        whether anything was OCR-guessed."""
+        if not hasattr(self, "_spend_date_button"):
+            return
+        if self.can_confirm_spend_dates():
+            self._spend_date_button.state(["!disabled"])
+        else:
+            self._spend_date_button.state(["disabled"])
+
+    def _refresh_category_button_state(self) -> None:
+        """Enables the button once a result exists -- every match needs a
+        category, so unlike Review Amounts this never depends on whether
+        anything was OCR-guessed."""
+        if not hasattr(self, "_category_button"):
+            return
+        if self.can_categorize():
+            self._category_button.state(["!disabled"])
+        else:
+            self._category_button.state(["disabled"])
+
     def _refresh_run_button_state(self) -> None:
         if self.can_run():
             self._run_button.state(["!disabled"])
@@ -753,6 +1459,8 @@ class App:
         if self.last_result is None:
             return
         self._refresh_review_button_state()
+        self._refresh_category_button_state()
+        self._refresh_spend_date_button_state()
         for doc in self.last_result.documents:
             self._insert_document_rows(doc)
         self._preview_tree.insert(
@@ -858,6 +1566,32 @@ class App:
         else:
             self._custom_pattern_entry.delete(0, tk.END)
             self._custom_label_entry.delete(0, tk.END)
+
+    def _on_add_date_rule(self) -> None:
+        pattern = self._date_pattern_entry.get().strip()
+        label = self._date_label_entry.get().strip()
+        if not pattern:
+            return
+        error = self.add_date_rule(pattern, label)
+        if error:
+            self._date_rule_error_label.config(text=error)
+        else:
+            self._date_rule_error_label.config(text="")
+            self._date_pattern_entry.delete(0, tk.END)
+            self._date_label_entry.delete(0, tk.END)
+
+    def _on_add_category_rule(self) -> None:
+        pattern = self._category_pattern_entry.get().strip()
+        label = self._category_label_entry.get().strip()
+        if not pattern:
+            return
+        error = self.add_category_rule(pattern, label)
+        if error:
+            self._category_rule_error_label.config(text=error)
+        else:
+            self._category_rule_error_label.config(text="")
+            self._category_pattern_entry.delete(0, tk.END)
+            self._category_label_entry.delete(0, tk.END)
 
     def _on_export(self) -> None:
         if self.last_result is None:

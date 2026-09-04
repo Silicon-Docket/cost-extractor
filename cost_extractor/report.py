@@ -1,7 +1,9 @@
-"""Builds the .xlsx report (Summary, Details, and Revisions sheets) from a PipelineResult."""
+"""Builds the .xlsx report (Summary, Details, Categories, Revisions, and Spend By
+Month sheets) from a PipelineResult."""
 
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -9,6 +11,8 @@ from openpyxl import Workbook
 
 from cost_extractor.pipeline import PipelineResult
 from cost_extractor.revisions import format_revision_timestamp
+from cost_extractor import category_rules
+from cost_extractor import date_rules as _date_rules
 
 _SUMMARY_HEADER = [
     "Document",
@@ -30,6 +34,10 @@ _DETAILS_HEADER = [
     # What OCR originally produced, kept beside the corrected value so a
     # correction reads as a correction rather than a silent rewrite.
     "Read As Text",
+    "Category",
+    "Category Review",
+    "Spend Date",
+    "Spend Date Review",
 ]
 
 # Written where a value would otherwise be silently trustworthy-looking.
@@ -56,6 +64,30 @@ def review_label(match) -> Optional[str]:
     return REVIEW_FLAG if match.value_needs_review else None
 
 
+def category_label(match, rules: list["CategoryRule"]) -> str:
+    if match.category_reviewed:
+        return match.effective_category or "Uncategorized"
+    suggestion = category_rules.suggest_category(match.line_text, rules)
+    return f"{suggestion} (suggested, unconfirmed)" if suggestion else "Uncategorized"
+def spend_date_label(
+    match, doc: "DocumentResult", rules: list["DateRule"], candidates=None
+) -> str:
+    if match.spend_date_reviewed:
+        # A human can confirm "no date applies" -- that's a completed
+        # review, not a missing one, so it gets its own label rather
+        # than crashing on effective_spend_date.isoformat() (None has no
+        # such method) or reading the same as "nobody has looked yet."
+        if match.effective_spend_date is None:
+            return "No Date (confirmed)"
+        return match.effective_spend_date.isoformat()
+    if candidates is None:
+        candidates = _date_rules.find_dates(doc.full_text, rules)
+    nearest = _date_rules.nearest_date(candidates, match.doc_offset)
+    if nearest is None or nearest.value is None:
+        return "Undated"
+    return f"{nearest.value.isoformat()} (suggested, unconfirmed)"
+
+
 def _as_number(value) -> float:
     # Written as a plain float, never an Excel formula string, so a
     # reload via openpyxl (which does not evaluate formulas) sees the
@@ -68,6 +100,7 @@ _REVISIONS_HEADER = [
     "Location",
     "Matched Text",
     "Rule",
+    "Dimension",
     "Revised From",
     "Revised To",
     "Timestamp",
@@ -92,6 +125,7 @@ def _revision_rows(match) -> list[list]:
                 match.location,
                 match.raw_text,
                 match.rule_id,
+                "Value",
                 _as_number(previous),
                 _as_number(revision.value),
                 format_revision_timestamp(revision.at),
@@ -102,7 +136,147 @@ def _revision_rows(match) -> list[list]:
     return rows
 
 
-def build_workbook(result: PipelineResult) -> Workbook:
+def _category_revision_rows(match) -> list[list]:
+    """One row per category-revision event, same chaining rule as
+    _revision_rows: "Revised From" is the value immediately before that
+    revision -- None ("Uncategorized") for the first one, the previous
+    revision's category for every one after."""
+    rows = []
+    previous = None
+    for revision in match.category_revisions:
+        rows.append(
+            [
+                match.display_name,
+                match.location,
+                match.raw_text,
+                match.rule_id,
+                "Category",
+                previous or "Uncategorized",
+                revision.value or "Uncategorized",
+                format_revision_timestamp(revision.at),
+                revision.note,
+            ]
+        )
+        previous = revision.value
+    return rows
+
+
+def _spend_date_revision_rows(match) -> list[list]:
+    """One row per spend-date-revision event, same chaining rule as
+    _revision_rows: "Revised From" is the date immediately before that
+    revision -- "Undated" for the first one (nothing was ever confirmed
+    before it), the previous revision's date (or "Undated" if that one
+    was a confirmed no-date) for every one after."""
+    rows = []
+    previous = None
+    for revision in match.spend_date_revisions:
+        rows.append(
+            [
+                match.display_name,
+                match.location,
+                match.raw_text,
+                match.rule_id,
+                "Spend Date",
+                previous.isoformat() if previous is not None else "Undated",
+                revision.value.isoformat() if revision.value is not None else "Undated",
+                format_revision_timestamp(revision.at),
+                revision.note,
+            ]
+        )
+        previous = revision.value
+    return rows
+
+
+_CATEGORIES_HEADER = ["Category", "Status", "Amount", "Match Count"]
+
+
+def _category_summary_rows(
+    result: PipelineResult, rules: list["category_rules.CategoryRule"]
+) -> list[list]:
+    """One row per (category, status) pair. Confirmed rows sum
+    effective_value for matches whose effective_category matches;
+    unconfirmed rows sum matches whose live suggestion matches but
+    aren't confirmed yet; an Uncategorized row covers matches with
+    neither, omitted (not a zero row) when there are none."""
+    confirmed: dict[str, tuple[Decimal, int]] = {}
+    unconfirmed: dict[str, tuple[Decimal, int]] = {}
+    uncategorized_total = Decimal("0")
+    uncategorized_count = 0
+
+    for doc in result.documents:
+        for m in doc.matches:
+            if m.category_reviewed:
+                bucket, key = confirmed, m.effective_category or "Uncategorized"
+            else:
+                suggestion = category_rules.suggest_category(m.line_text, rules)
+                if suggestion is None:
+                    uncategorized_total += m.effective_value
+                    uncategorized_count += 1
+                    continue
+                bucket, key = unconfirmed, suggestion
+            total, count = bucket.get(key, (Decimal("0"), 0))
+            bucket[key] = (total + m.effective_value, count + 1)
+
+    rows = []
+    for category in sorted(set(confirmed) | set(unconfirmed)):
+        if category in confirmed:
+            total, count = confirmed[category]
+            rows.append([category, "Confirmed", _as_number(total), count])
+        if category in unconfirmed:
+            total, count = unconfirmed[category]
+            rows.append([category, "Unconfirmed", _as_number(total), count])
+    if uncategorized_count:
+        rows.append(
+            ["Uncategorized", "(no signal)", _as_number(uncategorized_total), uncategorized_count]
+        )
+    return rows
+
+
+_SPEND_BY_MONTH_HEADER = ["Month", "Amount", "Match Count"]
+
+
+def _spend_by_month_rows(result: PipelineResult) -> list[list]:
+    """One row per calendar month with a confirmed spend date, sorted
+    chronologically, plus two final rows so every match lands in exactly
+    one bucket: a confirmed "no date applies" is a different fact from a
+    match nobody has reviewed yet, so they never share a row."""
+    by_month: dict[str, tuple[Decimal, int]] = {}
+    no_date_total = Decimal("0")
+    no_date_count = 0
+    unreviewed_total = Decimal("0")
+    unreviewed_count = 0
+
+    for doc in result.documents:
+        for m in doc.matches:
+            if not m.spend_date_reviewed:
+                unreviewed_total += m.effective_value
+                unreviewed_count += 1
+            elif m.effective_spend_date is None:
+                no_date_total += m.effective_value
+                no_date_count += 1
+            else:
+                key = m.effective_spend_date.strftime("%Y-%m")
+                total, count = by_month.get(key, (Decimal("0"), 0))
+                by_month[key] = (total + m.effective_value, count + 1)
+
+    rows = [
+        [month, _as_number(total), count]
+        for month, (total, count) in sorted(by_month.items())
+    ]
+    if no_date_count:
+        rows.append(["No Date (confirmed)", _as_number(no_date_total), no_date_count])
+    if unreviewed_count:
+        rows.append(["Not Yet Reviewed", _as_number(unreviewed_total), unreviewed_count])
+    return rows
+
+
+def build_workbook(
+    result: PipelineResult,
+    category_rules: Optional[list["CategoryRule"]] = None,
+    date_rules: Optional[list["DateRule"]] = None,
+) -> Workbook:
+    active_category_rules = category_rules or []
+    active_date_rules = date_rules or []
     wb = Workbook()
     summary_ws = wb.active
     summary_ws.title = "Summary"
@@ -132,6 +306,12 @@ def build_workbook(result: PipelineResult) -> Workbook:
     summary_ws.append(
         ["Confidently read", None, None, _as_number(result.confident_total), None]
     )
+    # Both trailer rows below are COUNTS, so they belong under "Amounts
+    # Found" (index 2), never under "Subtotal" (index 3). A count sitting in
+    # the money column reads as a dollar figure to anyone formatting or
+    # summing that column, and this workbook is a legal-discovery
+    # deliverable.
+    #
     # Counts every unchecked guess, not just low-confidence ones: OCR read
     # $940.00 as $440.00 at 84% confidence, so a score cannot certify a
     # reading as safe.
@@ -139,8 +319,26 @@ def build_workbook(result: PipelineResult) -> Workbook:
         [
             "Guessed amounts not yet checked",
             None,
-            None,
             result.unreviewed_ocr_count,
+            None,
+            None,
+        ]
+    )
+    summary_ws.append(
+        [
+            "Amounts not yet categorized",
+            None,
+            result.uncategorized_count,
+            None,
+            None,
+        ]
+    )
+    summary_ws.append(
+        [
+            "Dates Not Yet Reviewed",
+            None,
+            result.unreviewed_date_count,
+            None,
             None,
         ]
     )
@@ -148,6 +346,7 @@ def build_workbook(result: PipelineResult) -> Workbook:
     details_ws = wb.create_sheet("Details")
     details_ws.append(_DETAILS_HEADER)
     for doc in result.documents:
+        doc_date_candidates = _date_rules.find_dates(doc.full_text, active_date_rules)
         for m in doc.matches:
             details_ws.append(
                 [
@@ -160,8 +359,17 @@ def build_workbook(result: PipelineResult) -> Workbook:
                     m.confidence,
                     review_label(m),
                     m.raw_text if m.value_reviewed else None,
+                    category_label(m, active_category_rules),
+                    REVIEW_FLAG if not m.category_reviewed else None,
+                    spend_date_label(m, doc, active_date_rules, doc_date_candidates),
+                    REVIEW_FLAG if not m.spend_date_reviewed else None,
                 ]
             )
+
+    categories_ws = wb.create_sheet("Categories")
+    categories_ws.append(_CATEGORIES_HEADER)
+    for row in _category_summary_rows(result, active_category_rules):
+        categories_ws.append(row)
 
     revisions_ws = wb.create_sheet("Revisions")
     revisions_ws.append(_REVISIONS_HEADER)
@@ -169,6 +377,15 @@ def build_workbook(result: PipelineResult) -> Workbook:
         for m in doc.matches:
             for row in _revision_rows(m):
                 revisions_ws.append(row)
+            for row in _category_revision_rows(m):
+                revisions_ws.append(row)
+            for row in _spend_date_revision_rows(m):
+                revisions_ws.append(row)
+
+    spend_by_month_ws = wb.create_sheet("Spend By Month")
+    spend_by_month_ws.append(_SPEND_BY_MONTH_HEADER)
+    for row in _spend_by_month_rows(result):
+        spend_by_month_ws.append(row)
 
     return wb
 

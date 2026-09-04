@@ -163,7 +163,8 @@ def test_the_grand_total_reflects_corrections(tmp_path):
 
 def test_the_summary_reports_what_is_still_unchecked(tmp_path):
     ws = _sheet(tmp_path, "Summary")
-    labels = {row[0].value: row[3].value for row in ws.iter_rows()}
+    # Column 2 is "Amounts Found" -- this is a count, not money.
+    labels = {row[0].value: row[2].value for row in ws.iter_rows()}
 
     # Two OCR amounts in _result(), neither reviewed.
     assert labels["Guessed amounts not yet checked"] == 2
@@ -176,7 +177,7 @@ def test_revisions_sheet_header(tmp_path):
     ws = openpyxl.load_workbook(path)["Revisions"]
 
     assert [c.value for c in ws[1]] == [
-        "Source File", "Location", "Matched Text", "Rule",
+        "Source File", "Location", "Matched Text", "Rule", "Dimension",
         "Revised From", "Revised To", "Timestamp", "Note",
     ]
 

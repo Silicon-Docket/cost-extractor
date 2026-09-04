@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import threading
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Optional
@@ -84,6 +85,50 @@ class MatchRecord:
             return False
         return self.confidence < LOW_CONFIDENCE_THRESHOLD
 
+    # The specific text line this amount was found on -- segment.text
+    # split on newlines, the line containing this match's character
+    # offset. Captured at extraction time because segments are transient
+    # (gone once run_pipeline returns); category-rule suggestions need
+    # this same line text on demand later, in the GUI, without re-running
+    # extraction (which for an OCR'd page would mean re-running OCR).
+    line_text: str = ""
+    # Every human decision about this amount's category, in order -- same
+    # append-only discipline as value_revisions. Typed Optional[str]:
+    # "no category yet" is a real, expected state (every match starts
+    # uncategorized), unlike a money value, which is never absent.
+    category_revisions: list[Revision[Optional[str]]] = field(default_factory=list)
+
+    @property
+    def category_reviewed(self) -> bool:
+        return bool(self.category_revisions)
+
+    @property
+    def effective_category(self) -> Optional[str]:
+        """The confirmed category, or None ("Uncategorized") if nobody
+        has confirmed one yet. Unlike effective_value, there is no
+        machine-extracted fallback -- a category is only ever a
+        suggestion until a human confirms it, never an extraction."""
+        return latest_value(self.category_revisions, None)
+    # This match's own character offset within its DocumentResult's
+    # full_text -- not within its own segment. Needed to compute "nearest
+    # date": comparing a match's position to every date candidate found
+    # anywhere in the document only makes sense if both are measured in
+    # the same coordinate space.
+    doc_offset: int = 0
+    # Every human decision about this amount's spend date, in order --
+    # same append-only discipline as value_revisions. Typed
+    # Optional[date]: "no date yet" and "confirmed, no date applies" are
+    # both real, expected states.
+    spend_date_revisions: list[Revision[Optional[date]]] = field(default_factory=list)
+
+    @property
+    def spend_date_reviewed(self) -> bool:
+        return bool(self.spend_date_revisions)
+
+    @property
+    def effective_spend_date(self) -> Optional[date]:
+        return latest_value(self.spend_date_revisions, None)
+
 
 @dataclass
 class DocumentResult:
@@ -92,6 +137,13 @@ class DocumentResult:
     message: Optional[str] = None
     matches: list[MatchRecord] = field(default_factory=list)
     subtotal: Decimal = Decimal("0")
+    # All of this document's segments' text, concatenated at extraction
+    # time with a "\n\n" separator between segments (so a date at the
+    # very end of one page's text can never appear adjacent to text at
+    # the start of the next). Segments are transient -- gone once
+    # run_pipeline returns -- so this is captured now for on-demand date
+    # suggestion later, in the GUI.
+    full_text: str = ""
 
     @property
     def needs_review(self) -> bool:
@@ -172,6 +224,35 @@ class PipelineResult:
             if m.provenance == "ocr" and not m.value_reviewed
         )
 
+    @property
+    def uncategorized_count(self) -> int:
+        """Every match nobody has confirmed a category for yet --
+        deliberately every provenance and every suggestion state, not
+        just OCR-derived or not-yet-suggested ones: "still needs a
+        category assigned" means exactly category_reviewed is False,
+        full stop, the same way unreviewed_ocr_count doesn't carve out
+        confidently-guessed amounts."""
+        return sum(
+            1
+            for doc in self.documents
+            for m in doc.matches
+            if not m.category_reviewed
+        )
+
+    @property
+    def unreviewed_date_count(self) -> int:
+        """Every match nobody has confirmed -- or explicitly declined --
+        a spend date for yet. A confirmed "no date applies" (see
+        MatchRecord.spend_date_reviewed) counts as reviewed, not
+        unreviewed, the same way an OCR reading a human accepted as-is
+        still counts as reviewed for unreviewed_ocr_count."""
+        return sum(
+            1
+            for doc in self.documents
+            for m in doc.matches
+            if not m.spend_date_reviewed
+        )
+
 
 # Pixels of surrounding page kept around a crop. Digits are far easier to
 # judge with a little of the line either side than tight to the ink.
@@ -199,6 +280,15 @@ def _crop_png(page, bbox: Optional[BoundingBox]) -> Optional[bytes]:
         return buffer.getvalue()
     except Exception:  # noqa: BLE001 - the amount matters more than its picture
         return None
+
+
+def _line_containing(text: str, start: int) -> str:
+    """The single line of `text` that character offset `start` falls in."""
+    line_start = text.rfind("\n", 0, start) + 1  # 0 if no newline found
+    line_end = text.find("\n", start)
+    if line_end == -1:
+        line_end = len(text)
+    return text[line_start:line_end]
 
 
 def _extract(discovered: DiscoveredFile, ocr_enabled: bool) -> ExtractionResult:
@@ -241,6 +331,8 @@ def _process_single_file(
         )
 
     matches: list[MatchRecord] = []
+    doc_cursor = 0
+    full_text_parts: list[str] = []
     for segment in extraction.segments:
         found = find_money_matches(segment.text, rules)
         # The match's own character offsets locate it on the page, so no
@@ -270,8 +362,15 @@ def _process_single_file(
                     bbox=evidence.bbox if evidence else None,
                     render_scale=segment.render_scale,
                     crop_png=_crop_png(page, evidence.bbox) if evidence else None,
+                    line_text=_line_containing(segment.text, m.start),
+                    doc_offset=doc_cursor + m.start,
                 )
             )
+
+        full_text_parts.append(segment.text)
+        # +2 for the "\n\n" separator that will join this segment's text
+        # into full_text below.
+        doc_cursor += len(segment.text) + 2
 
     subtotal = sum((m.value for m in matches), Decimal("0"))
     return DocumentResult(
@@ -280,6 +379,7 @@ def _process_single_file(
         message=extraction.error_message,
         matches=matches,
         subtotal=subtotal,
+        full_text="\n\n".join(full_text_parts),
     )
 
 
