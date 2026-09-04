@@ -84,6 +84,31 @@ class MatchRecord:
             return False
         return self.confidence < LOW_CONFIDENCE_THRESHOLD
 
+    # The specific text line this amount was found on -- segment.text
+    # split on newlines, the line containing this match's character
+    # offset. Captured at extraction time because segments are transient
+    # (gone once run_pipeline returns); category-rule suggestions need
+    # this same line text on demand later, in the GUI, without re-running
+    # extraction (which for an OCR'd page would mean re-running OCR).
+    line_text: str = ""
+    # Every human decision about this amount's category, in order -- same
+    # append-only discipline as value_revisions. Typed Optional[str]:
+    # "no category yet" is a real, expected state (every match starts
+    # uncategorized), unlike a money value, which is never absent.
+    category_revisions: list[Revision[Optional[str]]] = field(default_factory=list)
+
+    @property
+    def category_reviewed(self) -> bool:
+        return bool(self.category_revisions)
+
+    @property
+    def effective_category(self) -> Optional[str]:
+        """The confirmed category, or None ("Uncategorized") if nobody
+        has confirmed one yet. Unlike effective_value, there is no
+        machine-extracted fallback -- a category is only ever a
+        suggestion until a human confirms it, never an extraction."""
+        return latest_value(self.category_revisions, None)
+
 
 @dataclass
 class DocumentResult:
@@ -172,6 +197,21 @@ class PipelineResult:
             if m.provenance == "ocr" and not m.value_reviewed
         )
 
+    @property
+    def uncategorized_count(self) -> int:
+        """Every match nobody has confirmed a category for yet --
+        deliberately every provenance and every suggestion state, not
+        just OCR-derived or not-yet-suggested ones: "still needs a
+        category assigned" means exactly category_reviewed is False,
+        full stop, the same way unreviewed_ocr_count doesn't carve out
+        confidently-guessed amounts."""
+        return sum(
+            1
+            for doc in self.documents
+            for m in doc.matches
+            if not m.category_reviewed
+        )
+
 
 # Pixels of surrounding page kept around a crop. Digits are far easier to
 # judge with a little of the line either side than tight to the ink.
@@ -199,6 +239,15 @@ def _crop_png(page, bbox: Optional[BoundingBox]) -> Optional[bytes]:
         return buffer.getvalue()
     except Exception:  # noqa: BLE001 - the amount matters more than its picture
         return None
+
+
+def _line_containing(text: str, start: int) -> str:
+    """The single line of `text` that character offset `start` falls in."""
+    line_start = text.rfind("\n", 0, start) + 1  # 0 if no newline found
+    line_end = text.find("\n", start)
+    if line_end == -1:
+        line_end = len(text)
+    return text[line_start:line_end]
 
 
 def _extract(discovered: DiscoveredFile, ocr_enabled: bool) -> ExtractionResult:
@@ -270,6 +319,7 @@ def _process_single_file(
                     bbox=evidence.bbox if evidence else None,
                     render_scale=segment.render_scale,
                     crop_png=_crop_png(page, evidence.bbox) if evidence else None,
+                    line_text=_line_containing(segment.text, m.start),
                 )
             )
 
