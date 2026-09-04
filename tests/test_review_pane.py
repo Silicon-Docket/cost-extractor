@@ -505,6 +505,32 @@ def test_the_note_field_clears_between_matches(app):
     assert app._review_note_entry.get() == ""
 
 
+def test_second_opinions_cache_is_cleared_between_runs(app, monkeypatch):
+    # The exact bug class already fixed for _category_suggestions on this
+    # branch: a stale id(match)-keyed cache entry from a PRIOR run must
+    # not survive into a NEW run's different MatchRecord. Plants a stale
+    # entry directly at id(m2) rather than relying on natural CPython
+    # id-reuse -- this makes the regression concrete and deterministic.
+    _fake_backend(monkeypatch, "$100.00")
+    m1 = _match("440.00", confidence=82.0)
+    _load(app, [m1])
+
+    m2 = _match("200.00", confidence=80.0)
+    doc2 = DocumentResult(
+        display_name="scan2.pdf", status=Status.OK, matches=[m2], subtotal=Decimal("200.00"),
+    )
+    result2 = PipelineResult.from_documents([doc2])
+
+    import cost_extractor.gui as gui_module
+
+    app._second_opinions[id(m2)] = "$999.00"  # plant a stale, distinguishable entry
+    monkeypatch.setattr(gui_module, "run_pipeline", lambda *a, **k: result2)
+    app._run_worker([], [])
+
+    # Recomputed from the live (faked) backend, not the stale planted value.
+    assert app.second_opinion(m2) == "$100.00"
+
+
 def test_a_blank_note_field_is_recorded_as_none(app):
     m = _match("440.00", confidence=84.0)
     _load(app, [m])

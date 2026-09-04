@@ -223,6 +223,48 @@ def test_toggling_a_category_rule_off_invalidates_the_suggestion_cache(app):
     assert app.suggest_category(m) is None
 
 
+def test_adding_a_category_rule_refreshes_an_open_category_window(app):
+    m = _match(line_text="nothing relevant here")
+    _load(app, [m])
+    app.open_category_window()
+    assert app._category_suggestion_label.cget("text") == "No category suggestion for this line."
+
+    app.add_category_rule(r"\brelevant\b", "Relevant")
+
+    assert app._category_suggestion_label.cget("text") == "Suggested: Relevant"
+
+
+def test_removing_a_category_rule_refreshes_an_open_category_window(app):
+    app.add_category_rule(r"\bpermits?\b", "Permits")
+    custom_id = next(r.id for r in app.category_rules if not r.built_in)
+    m = _match(line_text="building permit")
+    _load(app, [m])
+    app.open_category_window()
+    assert app._category_suggestion_label.cget("text") == "Suggested: Permits"
+
+    app.remove_category_rule(custom_id)
+
+    assert (
+        app._category_suggestion_label.cget("text")
+        == "No category suggestion for this line."
+    )
+
+
+def test_toggling_a_category_rule_off_refreshes_an_open_category_window(app):
+    m = _match(line_text="materials delivered")
+    _load(app, [m])
+    app.open_category_window()
+    assert app._category_suggestion_label.cget("text") == "Suggested: Materials"
+    materials_id = next(r.id for r in app.category_rules if r.id == "materials")
+
+    app.toggle_category_rule(materials_id, False)
+
+    assert (
+        app._category_suggestion_label.cget("text")
+        == "No category suggestion for this line."
+    )
+
+
 def test_the_category_window_opens_and_shows_the_first_match(app):
     _load(app, [_match(raw_text="$100.00")])
 

@@ -350,12 +350,14 @@ class App:
         self.category_rules.append(rule)
         self._category_suggestions.clear()
         self._refresh_category_rule_checkboxes()
+        self._refresh_category_widgets()
         return None
 
     def remove_category_rule(self, rule_id: str) -> None:
         self.category_rules = [r for r in self.category_rules if r.id != rule_id]
         self._category_suggestions.clear()
         self._refresh_category_rule_checkboxes()
+        self._refresh_category_widgets()
 
     def toggle_category_rule(self, rule_id: str, enabled: bool) -> None:
         for r in self.category_rules:
@@ -363,6 +365,7 @@ class App:
                 r.enabled = enabled
         self._category_suggestions.clear()
         self._refresh_category_rule_checkboxes()
+        self._refresh_category_widgets()
 
     def _refresh_category_rule_checkboxes(self) -> None:
         if not hasattr(self, "_category_rules_container"):
@@ -475,6 +478,7 @@ class App:
             cancel_flag=self.cancel_flag,
         )
         self._category_suggestions.clear()
+        self._second_opinions.clear()
         self.last_result = result
         self._progress_queue.put("done")
 
