@@ -197,7 +197,13 @@ def test_build_custom_rule_requires_named_amount_group():
 
 
 def test_build_custom_rule_rejects_catastrophic_backtracking_pattern():
+    # This pattern is deliberately catastrophic: the assertion below is that
+    # build_custom_rule's ReDoS guard (_is_pattern_too_slow) rejects it
+    # before it could ever be used for real matching. It is only ever
+    # probed against fixed ~22-char strings with a 0.1s bail, never against
+    # attacker-controlled unbounded input -- a false positive for py/redos.
     with pytest.raises(ValueError, match="slow|backtrack"):
+        # codeql[py/redos]
         build_custom_rule(r"(?P<amount>(a+)+)b", "Evil", 0)
 
 
