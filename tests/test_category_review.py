@@ -128,9 +128,12 @@ def test_accept_category_suggestion_with_no_suggestion_available_is_rejected(app
 def test_category_suggestions_cache_is_cleared_between_runs(app, monkeypatch):
     # The exact bug caught late on the sibling spend-over-time branch:
     # a stale id(match)-keyed cache entry from a PRIOR run must not
-    # survive into a NEW run's different MatchRecord. Drives the real
-    # _run_worker path (not the _load test shortcut) for the second run,
-    # so this test actually exercises the cache-clear this task adds.
+    # survive into a NEW run's different MatchRecord. Directly plants a
+    # stale entry at id(m2) rather than relying on natural CPython
+    # id-reuse (which won't happen here since m1 stays alive as a local
+    # variable) -- this makes the regression concrete and deterministic:
+    # if _run_worker's cache-clear line were removed, this planted value
+    # would be returned instead of the correct recomputed None.
     m1 = _match(line_text="materials delivered")
     _load(app, [m1])
     assert app.suggest_category(m1) == "Materials"  # seed the cache
@@ -143,6 +146,7 @@ def test_category_suggestions_cache_is_cleared_between_runs(app, monkeypatch):
 
     import cost_extractor.gui as gui_module
 
+    app._category_suggestions[id(m2)] = "Materials"  # plant the stale entry
     monkeypatch.setattr(gui_module, "run_pipeline", lambda *a, **k: result2)
     app._run_worker([], [])
 
