@@ -231,8 +231,8 @@ def build_workbook(
         [
             "Guessed amounts not yet checked",
             None,
-            None,
             result.unreviewed_ocr_count,
+            None,
             None,
         ]
     )
@@ -240,8 +240,8 @@ def build_workbook(
         [
             "Dates Not Yet Reviewed",
             None,
-            None,
             result.unreviewed_date_count,
+            None,
             None,
         ]
     )

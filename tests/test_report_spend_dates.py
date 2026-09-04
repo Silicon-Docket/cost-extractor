@@ -97,9 +97,19 @@ def test_summary_reports_dates_not_yet_reviewed(tmp_path):
     record_revision(reviewed.spend_date_revisions, date(2026, 6, 14), now=_NOW)
     unreviewed = _match()
     ws = _sheet(tmp_path, _result([reviewed, unreviewed]), "Summary")
-    labels = {row[0].value: row[3].value for row in ws.iter_rows()}
+    labels = {row[0].value: row[2].value for row in ws.iter_rows()}
 
     assert labels["Dates Not Yet Reviewed"] == 1
+
+
+def test_summary_count_rows_do_not_write_into_the_money_column(tmp_path):
+    # A count under "Subtotal" reads as a dollar figure to anyone
+    # formatting or summing that column, so it has to stay out of it.
+    ws = _sheet(tmp_path, _result([_match()]), "Summary")
+    row = next(r for r in ws.iter_rows() if r[0].value == "Dates Not Yet Reviewed")
+
+    assert row[2].value == 1  # "Amounts Found" -- the count column
+    assert row[3].value is None  # "Subtotal" -- the money column stays empty
 
 
 def test_revisions_sheet_gets_a_spend_date_dimension_row(tmp_path):
