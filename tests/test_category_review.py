@@ -301,3 +301,19 @@ def test_adding_a_category_rule_through_the_panel_extends_the_checkbox_list(app)
     app._on_add_category_rule()
 
     assert len(app._category_rules_container.winfo_children()) == 5
+
+
+def test_export_report_passes_the_live_category_rules_through(app, tmp_path):
+    import openpyxl
+
+    m = _match(line_text="materials delivered today")
+    _load(app, [m])
+
+    path = tmp_path / "report.xlsx"
+    error = app.export_report(path)
+
+    assert error is None
+    ws = openpyxl.load_workbook(path)["Details"]
+    header = [c.value for c in ws[1]]
+    row = [c.value for c in ws[2]]
+    assert row[header.index("Category")] == "Materials (suggested, unconfirmed)"

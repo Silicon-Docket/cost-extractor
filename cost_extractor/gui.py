@@ -503,7 +503,7 @@ class App:
         if self.last_result is None:
             return "Nothing to export yet — run first."
         try:
-            wb = build_workbook(self.last_result)
+            wb = build_workbook(self.last_result, self.category_rules)
             save_workbook(wb, path)
         except Exception as e:  # noqa: BLE001 - e.g. file open elsewhere
             return str(e)

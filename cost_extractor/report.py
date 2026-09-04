@@ -9,6 +9,7 @@ from openpyxl import Workbook
 
 from cost_extractor.pipeline import PipelineResult
 from cost_extractor.revisions import format_revision_timestamp
+from cost_extractor import category_rules
 
 _SUMMARY_HEADER = [
     "Document",
@@ -30,6 +31,8 @@ _DETAILS_HEADER = [
     # What OCR originally produced, kept beside the corrected value so a
     # correction reads as a correction rather than a silent rewrite.
     "Read As Text",
+    "Category",
+    "Category Review",
 ]
 
 # Written where a value would otherwise be silently trustworthy-looking.
@@ -54,6 +57,13 @@ def review_label(match) -> Optional[str]:
     if match.value_reviewed:
         return "corrected" if match.effective_value != match.value else "checked"
     return REVIEW_FLAG if match.value_needs_review else None
+
+
+def category_label(match, rules: list["CategoryRule"]) -> str:
+    if match.category_reviewed:
+        return match.effective_category
+    suggestion = category_rules.suggest_category(match.line_text, rules)
+    return f"{suggestion} (suggested, unconfirmed)" if suggestion else "Uncategorized"
 
 
 def _as_number(value) -> float:
@@ -102,7 +112,10 @@ def _revision_rows(match) -> list[list]:
     return rows
 
 
-def build_workbook(result: PipelineResult) -> Workbook:
+def build_workbook(
+    result: PipelineResult, category_rules: Optional[list["CategoryRule"]] = None
+) -> Workbook:
+    active_category_rules = category_rules or []
     wb = Workbook()
     summary_ws = wb.active
     summary_ws.title = "Summary"
@@ -144,6 +157,15 @@ def build_workbook(result: PipelineResult) -> Workbook:
             None,
         ]
     )
+    summary_ws.append(
+        [
+            "Amounts not yet categorized",
+            None,
+            None,
+            result.uncategorized_count,
+            None,
+        ]
+    )
 
     details_ws = wb.create_sheet("Details")
     details_ws.append(_DETAILS_HEADER)
@@ -160,6 +182,8 @@ def build_workbook(result: PipelineResult) -> Workbook:
                     m.confidence,
                     review_label(m),
                     m.raw_text if m.value_reviewed else None,
+                    category_label(m, active_category_rules),
+                    REVIEW_FLAG if not m.category_reviewed else None,
                 ]
             )
 
