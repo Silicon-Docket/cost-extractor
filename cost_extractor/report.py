@@ -159,7 +159,7 @@ def _category_summary_rows(
     for doc in result.documents:
         for m in doc.matches:
             if m.category_reviewed:
-                bucket, key = confirmed, m.effective_category
+                bucket, key = confirmed, m.effective_category or "Uncategorized"
             else:
                 suggestion = category_rules.suggest_category(m.line_text, rules)
                 if suggestion is None:

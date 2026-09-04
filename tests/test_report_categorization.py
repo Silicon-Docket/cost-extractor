@@ -178,6 +178,19 @@ def test_categories_sheet_uncategorized_row_present_when_no_signal(tmp_path):
     assert rows["Uncategorized"] == (100.0, 1)
 
 
+def test_a_confirmed_none_category_lands_in_uncategorized_not_a_crash(tmp_path):
+    # Defends against a future writer of category_revisions recording
+    # None (the data model allows it; only today's GUI callers forbid
+    # it) -- must degrade to the Uncategorized bucket, not crash the
+    # whole export via an unsortable None/str mix.
+    m = _match()
+    record_revision(m.category_revisions, None, now=_NOW)
+    ws = _sheet(tmp_path, _result([m]), "Categories")
+    rows = {row[0]: (row[2], row[3]) for row in ws.iter_rows(min_row=2, values_only=True)}
+
+    assert rows["Uncategorized"] == (100.0, 1)
+
+
 def test_categories_sheet_exists_header_only_with_zero_matches(tmp_path):
     ws = _sheet(tmp_path, _result([]), "Categories")
 
