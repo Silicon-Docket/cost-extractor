@@ -294,6 +294,41 @@ class App:
         if window is None or not window.winfo_exists():
             return
 
+    def add_category_rule(self, pattern_str: str, label: str) -> Optional[str]:
+        """Validates and adds a custom category rule. Returns an error
+        message on failure (never raises), or None on success."""
+        try:
+            rule = category_rules.build_custom_rule(
+                pattern_str, label or None, self._custom_category_rule_count
+            )
+        except ValueError as e:
+            return str(e)
+        self._custom_category_rule_count += 1
+        self.category_rules.append(rule)
+        self._category_suggestions.clear()
+        self._refresh_category_rule_checkboxes()
+        return None
+
+    def remove_category_rule(self, rule_id: str) -> None:
+        self.category_rules = [r for r in self.category_rules if r.id != rule_id]
+        self._category_suggestions.clear()
+        self._refresh_category_rule_checkboxes()
+
+    def toggle_category_rule(self, rule_id: str, enabled: bool) -> None:
+        for r in self.category_rules:
+            if r.id == rule_id:
+                r.enabled = enabled
+        self._category_suggestions.clear()
+        self._refresh_category_rule_checkboxes()
+
+    def _refresh_category_rule_checkboxes(self) -> None:
+        # Guarded like _refresh_review_button_state: safe to call before
+        # the "Categories" panel (Task 5) has built its container. Task 5
+        # extends this method's body once the widget exists; it does not
+        # replace this guard.
+        if not hasattr(self, "_category_rules_container"):
+            return
+
     def current_review_match(self) -> Optional[MatchRecord]:
         queue = self.reviewable_matches()
         if not queue:

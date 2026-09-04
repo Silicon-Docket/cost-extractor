@@ -151,3 +151,73 @@ def test_category_suggestions_cache_is_cleared_between_runs(app, monkeypatch):
     app._run_worker([], [])
 
     assert app.suggest_category(m2) is None
+
+
+def test_add_category_rule_success_adds_rule(app):
+    error = app.add_category_rule(r"\bpermits?\b", "Permits")
+
+    assert error is None
+    assert any(r.label == "Permits" and not r.built_in for r in app.category_rules)
+
+
+def test_add_category_rule_invalid_pattern_returns_error_and_does_not_add(app):
+    before = len(app.category_rules)
+
+    error = app.add_category_rule(r"\bpermits?\b(", "Broken")
+
+    assert error is not None
+    assert len(app.category_rules) == before
+
+
+def test_remove_category_rule_removes_a_custom_rule(app):
+    app.add_category_rule(r"\bpermits?\b", "Permits")
+    custom_id = next(r.id for r in app.category_rules if not r.built_in)
+
+    app.remove_category_rule(custom_id)
+
+    assert all(r.built_in for r in app.category_rules)
+
+
+def test_toggle_category_rule_disables_it(app):
+    rule_id = app.category_rules[0].id
+
+    app.toggle_category_rule(rule_id, False)
+
+    assert app.category_rules[0].enabled is False
+
+
+def test_adding_a_category_rule_invalidates_the_suggestion_cache(app):
+    m = _match(line_text="building permit")
+    _load(app, [m])
+
+    # Seed the cache BEFORE the matching rule exists, and assert it
+    # seeded None -- otherwise a passing test below wouldn't prove the
+    # cache was actually cleared rather than never populated.
+    assert app.suggest_category(m) is None
+
+    app.add_category_rule(r"\bpermits?\b", "Permits")
+
+    assert app.suggest_category(m) == "Permits"
+
+
+def test_removing_a_category_rule_invalidates_the_suggestion_cache(app):
+    app.add_category_rule(r"\bpermits?\b", "Permits")
+    custom_id = next(r.id for r in app.category_rules if not r.built_in)
+    m = _match(line_text="building permit")
+    _load(app, [m])
+    assert app.suggest_category(m) == "Permits"
+
+    app.remove_category_rule(custom_id)
+
+    assert app.suggest_category(m) is None
+
+
+def test_toggling_a_category_rule_off_invalidates_the_suggestion_cache(app):
+    m = _match(line_text="materials delivered")
+    _load(app, [m])
+    assert app.suggest_category(m) == "Materials"
+    materials_id = next(r.id for r in app.category_rules if r.id == "materials")
+
+    app.toggle_category_rule(materials_id, False)
+
+    assert app.suggest_category(m) is None
