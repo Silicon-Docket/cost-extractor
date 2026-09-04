@@ -218,6 +218,12 @@ def build_workbook(
     summary_ws.append(
         ["Confidently read", None, None, _as_number(result.confident_total), None]
     )
+    # Both trailer rows below are COUNTS, so they belong under "Amounts
+    # Found" (index 2), never under "Subtotal" (index 3). A count sitting in
+    # the money column reads as a dollar figure to anyone formatting or
+    # summing that column, and this workbook is a legal-discovery
+    # deliverable.
+    #
     # Counts every unchecked guess, not just low-confidence ones: OCR read
     # $940.00 as $440.00 at 84% confidence, so a score cannot certify a
     # reading as safe.
@@ -225,8 +231,8 @@ def build_workbook(
         [
             "Guessed amounts not yet checked",
             None,
-            None,
             result.unreviewed_ocr_count,
+            None,
             None,
         ]
     )
@@ -234,8 +240,8 @@ def build_workbook(
         [
             "Amounts not yet categorized",
             None,
-            None,
             result.uncategorized_count,
+            None,
             None,
         ]
     )

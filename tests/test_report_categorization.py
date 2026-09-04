@@ -93,9 +93,23 @@ def test_summary_reports_amounts_not_yet_categorized(tmp_path):
     record_revision(categorized.category_revisions, "Materials", now=_NOW)
     uncategorized = _match()
     ws = _sheet(tmp_path, _result([categorized, uncategorized]), "Summary")
-    labels = {row[0].value: row[3].value for row in ws.iter_rows()}
+    # Column 2 is "Amounts Found" -- this is a count, not money.
+    labels = {row[0].value: row[2].value for row in ws.iter_rows()}
 
     assert labels["Amounts not yet categorized"] == 1
+
+
+def test_summary_count_rows_do_not_write_into_the_money_column(tmp_path):
+    # A count landing in "Subtotal" reads as a dollar figure to anyone
+    # currency-formatting or summing that column, and this workbook is the
+    # deliverable in a legal-discovery context.
+    ws = _sheet(tmp_path, _result([_match()]), "Summary")
+    row = next(
+        r for r in ws.iter_rows() if r[0].value == "Amounts not yet categorized"
+    )
+
+    assert row[2].value == 1  # "Amounts Found" -- the count column
+    assert row[3].value is None  # "Subtotal" -- the money column stays empty
 
 
 def test_revisions_sheet_gets_a_category_dimension_row(tmp_path):
