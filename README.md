@@ -367,6 +367,11 @@ present.
 .venv/bin/python -m PyInstaller build/cost_extractor_macos.spec --noconfirm --clean
 ```
 
+A macOS app built this way reports version `0.0.0` in Finder's Get Info —
+that marks it as a local dev build. Release builds get their version from
+the git tag, which the workflow passes to the spec as
+`COST_EXTRACTOR_VERSION`.
+
 Windows output: `dist\CostExtractor\CostExtractor.exe` — the whole
 `dist\CostExtractor` folder is portable, copy it anywhere (including a USB
 drive) and run the exe directly; no installer needed. Onedir (not onefile)
