@@ -223,7 +223,29 @@ jobs:
         run: python -m pytest tests/ -q
 
       - name: Build portable app
+        env:
+          COST_EXTRACTOR_VERSION: ${{ needs.determine-version.outputs.version }}
         run: python -m PyInstaller build/cost_extractor_macos.spec --noconfirm --clean
+
+      - name: Verify the bundle reports this release's version
+        run: |
+          set -euo pipefail
+          # Nothing else reads Info.plist, so a broken COST_EXTRACTOR_VERSION
+          # wiring would silently ship a bundle stamped 0.0.0 -- which is how
+          # the version sat at a stale 1.0.0 across three releases. Assert on
+          # the built artifact so that failure stops the release instead.
+          version="${{ needs.determine-version.outputs.version }}"
+          expected=$(printf '%s' "${version#v}" | grep -oE '^[0-9]+(\.[0-9]+){0,2}' || true)
+          if [ -z "$expected" ]; then
+            expected="0.0.0"
+          fi
+          actual=$(plutil -extract CFBundleShortVersionString raw \
+            "dist/CostExtractor.app/Contents/Info.plist")
+          echo "CFBundleShortVersionString=$actual (expected $expected)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::App bundle reports version $actual, but this release is $version"
+            exit 1
+          fi
 
       - name: OCR selftest against the packaged app
         run: |
