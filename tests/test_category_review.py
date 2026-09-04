@@ -303,6 +303,47 @@ def test_adding_a_category_rule_through_the_panel_extends_the_checkbox_list(app)
     assert len(app._category_rules_container.winfo_children()) == 5
 
 
+def test_a_new_run_refreshes_the_open_category_window(app, tmp_path, monkeypatch):
+    # Checks the visible caption widget, not just current_category_match():
+    # current_category_match() is a pure function of last_result /
+    # category_review_index and would already report the new match even
+    # without the fix. The actual bug is that the on-screen caption stays
+    # stale until _refresh_category_widgets() is called, which is what an
+    # operator trusts when clicking "Confirm category".
+    import time
+    import cost_extractor.gui as gui_module
+
+    m1 = _match(raw_text="$100.00", line_text="first run line")
+    _load(app, [m1])
+    app.open_category_window()
+    assert app.current_category_match() is m1
+    assert "first run line" in app._category_caption.cget("text")
+
+    m2 = _match(raw_text="$200.00", value="200.00", line_text="second run line")
+    doc2 = DocumentResult(
+        display_name="scan2.pdf", status=Status.OK, matches=[m2], subtotal=Decimal("200.00"),
+    )
+    result2 = PipelineResult.from_documents([doc2])
+    monkeypatch.setattr(gui_module, "run_pipeline", lambda *a, **k: result2)
+
+    app.add_paths([tmp_path / "fake.docx"])
+    app.start_run()
+    deadline = time.time() + 10
+    # Wait for _poll_progress itself to finish handling "done" (it clears
+    # _worker_thread), not just for last_result to change -- last_result is
+    # set by the background thread BEFORE "done" is queued, so waiting on
+    # last_result alone races ahead of _poll_progress's refresh calls.
+    while app._worker_thread is not None and time.time() < deadline:
+        app.root.update()
+        time.sleep(0.05)
+
+    assert app.last_result is result2
+    assert app.current_category_match() is m2
+    caption = app._category_caption.cget("text")
+    assert "second run line" in caption
+    assert "first run line" not in caption
+
+
 def test_export_report_passes_the_live_category_rules_through(app, tmp_path):
     import openpyxl
 

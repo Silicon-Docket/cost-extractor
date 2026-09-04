@@ -78,6 +78,16 @@ def test_details_reports_a_suggested_unconfirmed_category(tmp_path):
     assert row[header.index("Category Review")] == "REVIEW"
 
 
+def test_details_reports_a_confirmed_none_category_as_uncategorized_not_blank(tmp_path):
+    m = _match()
+    record_revision(m.category_revisions, None, now=_NOW)
+    ws = _sheet(tmp_path, _result([m]), "Details")
+    header = [c.value for c in ws[1]]
+    row = [c.value for c in ws[2]]
+
+    assert row[header.index("Category")] == "Uncategorized"
+
+
 def test_summary_reports_amounts_not_yet_categorized(tmp_path):
     categorized = _match()
     record_revision(categorized.category_revisions, "Materials", now=_NOW)
@@ -182,13 +192,19 @@ def test_a_confirmed_none_category_lands_in_uncategorized_not_a_crash(tmp_path):
     # Defends against a future writer of category_revisions recording
     # None (the data model allows it; only today's GUI callers forbid
     # it) -- must degrade to the Uncategorized bucket, not crash the
-    # whole export via an unsortable None/str mix.
-    m = _match()
-    record_revision(m.category_revisions, None, now=_NOW)
-    ws = _sheet(tmp_path, _result([m]), "Categories")
+    # whole export via an unsortable None/str mix. A SECOND, real-category
+    # match is required to actually construct that mix -- sorted() on a
+    # single None-only set never compares anything, so a one-match version
+    # of this test would pass for the wrong reason (see fix history).
+    none_category = _match(value="100.00")
+    record_revision(none_category.category_revisions, None, now=_NOW)
+    real_category = _match(value="50.00")
+    record_revision(real_category.category_revisions, "Materials", now=_NOW)
+    ws = _sheet(tmp_path, _result([none_category, real_category]), "Categories")
     rows = {row[0]: (row[2], row[3]) for row in ws.iter_rows(min_row=2, values_only=True)}
 
     assert rows["Uncategorized"] == (100.0, 1)
+    assert rows["Materials"] == (50.0, 1)
 
 
 def test_categories_sheet_exists_header_only_with_zero_matches(tmp_path):

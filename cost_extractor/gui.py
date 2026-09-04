@@ -489,6 +489,10 @@ class App:
                     self._worker_thread = None
                     self._set_status("Done")
                     self._refresh_preview_widget()
+                    self.review_index = 0
+                    self._refresh_review_widgets()
+                    self.category_review_index = 0
+                    self._refresh_category_widgets()
                     return
                 elif msg.startswith("progress:"):
                     self._set_status(f"Processing: {msg[len('progress:'):]}")

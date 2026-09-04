@@ -182,8 +182,8 @@ amount twice keeps both decisions in its history, the same append-only
 pattern the value review uses.
 
 The four built-in starter categories — Materials, Labor, Travel, Fees — are
-illustrative, not exhaustive. Edit or remove them, and add your own, in the
-**Categories** panel, the same way built-in money formats work in the
+illustrative, not exhaustive. Disable any you don't need, and add your own,
+in the **Categories** panel, the same way built-in money formats work in the
 **Money Formats** panel above it.
 
 **Adding a custom category pattern.** Use the **Custom pattern** row in the

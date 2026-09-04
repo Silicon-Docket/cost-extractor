@@ -62,7 +62,7 @@ def review_label(match) -> Optional[str]:
 
 def category_label(match, rules: list["CategoryRule"]) -> str:
     if match.category_reviewed:
-        return match.effective_category
+        return match.effective_category or "Uncategorized"
     suggestion = category_rules.suggest_category(match.line_text, rules)
     return f"{suggestion} (suggested, unconfirmed)" if suggestion else "Uncategorized"
 
