@@ -367,11 +367,6 @@ present.
 .venv/bin/python -m PyInstaller build/cost_extractor_macos.spec --noconfirm --clean
 ```
 
-A macOS app built this way reports version `0.0.0` in Finder's Get Info —
-that marks it as a local dev build. Release builds get their version from
-the git tag, which the workflow passes to the spec as
-`COST_EXTRACTOR_VERSION`.
-
 Windows output: `dist\CostExtractor\CostExtractor.exe` — the whole
 `dist\CostExtractor` folder is portable, copy it anywhere (including a USB
 drive) and run the exe directly; no installer needed. Onedir (not onefile)
@@ -386,6 +381,18 @@ be verified." Right-click (or Control-click) the app → **Open** → **Open**
 in the confirmation dialog — this is a one-time step per machine. If that
 still doesn't work, clear the quarantine flag directly:
 `xattr -cr /path/to/CostExtractor.app`.
+
+A macOS app built this way reports version `0.0.0` in Finder's Get Info,
+marking it a local dev build. Release builds take their version from the git
+tag; to stamp one on a local build, pass it yourself:
+
+```bash
+COST_EXTRACTOR_VERSION=v1.4.0 .venv/bin/python -m PyInstaller \
+  build/cost_extractor_macos.spec --noconfirm --clean
+```
+
+The Windows exe carries no version resource at all, so its Properties →
+Details tab shows no version on any build, release ones included.
 
 ## Downloading a release
 

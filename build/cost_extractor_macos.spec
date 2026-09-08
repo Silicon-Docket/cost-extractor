@@ -10,17 +10,26 @@ block_cipher = None
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(SPEC), ".."))
 
 # The git tag is this project's only source of version truth -- nothing in
-# the source tree carries a version string -- so the release workflow passes
-# the tag in here (e.g. "v1.3.1"). A local build with no tag reports 0.0.0,
-# which marks it as a dev build; that value must never reach a release, so
-# the workflow re-reads the built Info.plist and fails if it doesn't match
-# the tag. CFBundleShortVersionString must be one to three period-separated
-# integers, so trim anything else off (the workflow_dispatch default is
-# "v0.0.0-manual"); a non-string or malformed entry makes macOS refuse the
-# bundle.
-_raw_version = os.environ.get("COST_EXTRACTOR_VERSION", "").removeprefix("v")
-_version_match = re.match(r"\d+(?:\.\d+){0,2}", _raw_version)
-BUNDLE_VERSION = _version_match.group(0) if _version_match else "0.0.0"
+# the source tree carries a version string -- so the release workflow
+# normalizes the tag once and passes it in here (e.g. "1.3.1"), then re-reads
+# the built Info.plist and fails the release if the two disagree.
+#
+# Unset means a local dev build, which reports 0.0.0. Set-but-unparseable
+# means the wiring is broken, so fail loudly instead: stamping the dev marker
+# on what might be a release is the failure this whole path exists to stop.
+# CFBundleShortVersionString must be one to three period-separated integers --
+# macOS refuses a bundle whose entry is malformed or not a string.
+_raw_version = os.environ.get("COST_EXTRACTOR_VERSION", "").strip()
+if not _raw_version:
+    BUNDLE_VERSION = "0.0.0"
+else:
+    _version_match = re.match(r"v?(\d+(?:\.\d+){0,2})", _raw_version)
+    if _version_match is None:
+        raise SystemExit(
+            "COST_EXTRACTOR_VERSION=%r has no leading N[.N[.N]] version to "
+            "stamp into the app bundle" % _raw_version
+        )
+    BUNDLE_VERSION = _version_match.group(1)
 
 datas = [(os.path.join(PROJECT_ROOT, "vendor", "tesseract-macos"), "tesseract-macos")]
 datas += collect_data_files("tkinterdnd2")

@@ -24,15 +24,38 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      bundle_version: ${{ steps.version.outputs.bundle_version }}
     steps:
       - name: Determine version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$INPUT_VERSION"
           else
-            echo "version=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            version="$REF_NAME"
           fi
+
+          # Normalize once here and let the build jobs consume the result.
+          # Deriving it a second time next to the check that verifies it lets
+          # both copies make the same mistake and agree with each other.
+          #
+          # `tags: v*.*.*` is a glob, not a semver pattern: `vbeta.1.0` is a
+          # legal git tag that matches it and starts a release. Refuse those
+          # outright rather than quietly stamping the 0.0.0 dev-build marker
+          # onto a real release.
+          bundle_version=$(printf '%s' "${version#v}" | grep -oE '^[0-9]+(\.[0-9]+){0,2}' || true)
+          if [ -z "$bundle_version" ]; then
+            echo "::error::Version '$version' has no leading N[.N[.N]] -- tag releases as vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "bundle_version=$bundle_version" >> "$GITHUB_OUTPUT"
 
   build-windows:
     needs: determine-version
@@ -224,26 +247,28 @@ jobs:
 
       - name: Build portable app
         env:
-          COST_EXTRACTOR_VERSION: ${{ needs.determine-version.outputs.version }}
+          COST_EXTRACTOR_VERSION: ${{ needs.determine-version.outputs.bundle_version }}
         run: python -m PyInstaller build/cost_extractor_macos.spec --noconfirm --clean
 
       - name: Verify the bundle reports this release's version
+        env:
+          EXPECTED_VERSION: ${{ needs.determine-version.outputs.bundle_version }}
+          RELEASE_VERSION: ${{ needs.determine-version.outputs.version }}
         run: |
           set -euo pipefail
           # Nothing else reads Info.plist, so a broken COST_EXTRACTOR_VERSION
           # wiring would silently ship a bundle stamped 0.0.0 -- which is how
           # the version sat at a stale 1.0.0 across three releases. Assert on
           # the built artifact so that failure stops the release instead.
-          version="${{ needs.determine-version.outputs.version }}"
-          expected=$(printf '%s' "${version#v}" | grep -oE '^[0-9]+(\.[0-9]+){0,2}' || true)
-          if [ -z "$expected" ]; then
-            expected="0.0.0"
+          plist="dist/CostExtractor.app/Contents/Info.plist"
+          if [ ! -f "$plist" ]; then
+            echo "::error::$plist is missing -- the app bundle did not build"
+            exit 1
           fi
-          actual=$(plutil -extract CFBundleShortVersionString raw \
-            "dist/CostExtractor.app/Contents/Info.plist")
-          echo "CFBundleShortVersionString=$actual (expected $expected)"
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::App bundle reports version $actual, but this release is $version"
+          actual=$(plutil -extract CFBundleShortVersionString raw "$plist")
+          echo "CFBundleShortVersionString=$actual (expected $EXPECTED_VERSION)"
+          if [ "$actual" != "$EXPECTED_VERSION" ]; then
+            echo "::error::App bundle reports version $actual, but this release is $RELEASE_VERSION"
             exit 1
           fi
 
